@@ -1,0 +1,66 @@
+name: Build C4 Harchuvannya
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Android runner
+        run: flutter create --platforms=android --org ua.c4 .
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: C4-Harchuvannya-Android-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Windows runner
+        run: flutter create --platforms=windows --org ua.c4 .
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build windows --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: C4-Harchuvannya-Windows
+          path: build/windows/x64/runner/Release/**
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate macOS runner
+        run: flutter create --platforms=macos --org ua.c4 .
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build macos --release
+      - name: Pack app
+        run: ditto -c -k --sequesterRsrc --keepParent "build/macos/Build/Products/Release/c4_harchuvannya.app" "C4-Harchuvannya-macOS.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: C4-Harchuvannya-macOS
+          path: C4-Harchuvannya-macOS.zip
