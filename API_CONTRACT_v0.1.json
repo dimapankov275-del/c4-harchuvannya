@@ -1,0 +1,37 @@
+{
+  "base": "Google Apps Script Web App /exec",
+  "transport": "HTTPS JSON POST",
+  "request": {
+    "action": "string",
+    "sessionToken": "string|null",
+    "payload": "object"
+  },
+  "response": {
+    "ok": "boolean",
+    "data": "object|null",
+    "error": "{code,message}|null",
+    "serverRevision": "integer|null"
+  },
+  "actions": {
+    "auth.login": ["login", "password", "deviceId"],
+    "auth.logout": [],
+    "auth.changePassword": ["oldPassword", "newPassword"],
+    "sync.pull": ["afterRevision"],
+    "sync.push": ["changes[]"],
+    "personnel.list": ["group?"],
+    "personnel.update": ["personId", "name?", "rank?"],
+    "status.set": ["personId", "date", "meal", "mark"],
+    "status.bulk": ["personIds[]", "startDate", "endDate", "meals[]", "mark"],
+    "calculation.get": ["startDate", "endDate"],
+    "telegram.beginLink": [],
+    "telegram.status": [],
+    "telegram.sendCalculation": ["message1", "message2"],
+    "report.generate": ["group", "startDate", "endDate"],
+    "excel.generate": ["year", "month"],
+    "audit.search": ["actor?", "personId?", "group?", "from?", "to?", "mark?"],
+    "users.list": [],
+    "users.create": ["login", "temporaryPassword", "role", "groups[]"],
+    "users.update": ["userId", "role?", "groups?", "enabled?"],
+    "app.version": ["platform", "currentVersion"]
+  }
+}
