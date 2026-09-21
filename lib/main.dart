@@ -666,7 +666,7 @@ class AppTheme {
       navigationBarTheme: NavigationBarThemeData(
         height: 66,
         backgroundColor: darkMode ? const Color(0xFF071827) : Colors.white,
-        indicatorColor: blue.withOpacity(.17),
+        indicatorColor: blue.withValues(alpha: .17),
         labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(
               fontSize: 11,
               fontWeight: states.contains(WidgetState.selected) ? FontWeight.w700 : FontWeight.w500,
@@ -841,8 +841,8 @@ class AppLogo extends StatelessWidget {
           colors: <Color>[Color(0xFF0E3856), Color(0xFF09243B)],
         ),
         borderRadius: BorderRadius.circular(size * .23),
-        border: Border.all(color: const Color(0xFF315069).withOpacity(.7)),
-        boxShadow: <BoxShadow>[BoxShadow(color: Colors.black.withOpacity(.25), blurRadius: size * .22, offset: Offset(0, size * .08))],
+        border: Border.all(color: const Color(0xFF315069).withValues(alpha: .7)),
+        boxShadow: <BoxShadow>[BoxShadow(color: Colors.black.withValues(alpha: .25), blurRadius: size * .22, offset: Offset(0, size * .08))],
       ),
       alignment: Alignment.center,
       child: Text('🔱', style: TextStyle(fontSize: size * .52, height: 1)),
@@ -1013,10 +1013,10 @@ class _HomeShellState extends State<HomeShell> {
                       decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor))),
                       child: Row(
                         children: <Widget>[
-                          SizedBox(
+                          const SizedBox(
                             width: 310,
                             child: TextField(
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 hintText: 'Пошук по ПІБ...',
                                 prefixIcon: Icon(Icons.search_rounded, size: 20),
                                 isDense: true,
@@ -1109,7 +1109,7 @@ class SyncBadge extends StatelessWidget {
               decoration: BoxDecoration(
                 color: color,
                 shape: BoxShape.circle,
-                boxShadow: <BoxShadow>[BoxShadow(color: color.withOpacity(.2), blurRadius: 8, spreadRadius: 2)],
+                boxShadow: <BoxShadow>[BoxShadow(color: color.withValues(alpha: .2), blurRadius: 8, spreadRadius: 2)],
               ),
             ),
             const SizedBox(width: 8),
@@ -1320,7 +1320,7 @@ class QuickActionCard extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: colors),
           borderRadius: BorderRadius.circular(14),
-          boxShadow: <BoxShadow>[BoxShadow(color: colors.last.withOpacity(.22), blurRadius: 18, offset: const Offset(0, 8))],
+          boxShadow: <BoxShadow>[BoxShadow(color: colors.last.withValues(alpha: .22), blurRadius: 18, offset: const Offset(0, 8))],
         ),
         child: Material(
           color: Colors.transparent,
@@ -1329,7 +1329,7 @@ class QuickActionCard extends StatelessWidget {
             onTap: onTap,
             child: Stack(
               children: <Widget>[
-                Positioned(right: -24, top: -28, child: Container(width: 88, height: 88, decoration: BoxDecoration(color: Colors.white.withOpacity(.07), shape: BoxShape.circle))),
+                Positioned(right: -24, top: -28, child: Container(width: 88, height: 88, decoration: BoxDecoration(color: Colors.white.withValues(alpha: .07), shape: BoxShape.circle))),
                 Padding(
                   padding: const EdgeInsets.all(14),
                   child: Column(
@@ -1339,7 +1339,7 @@ class QuickActionCard extends StatelessWidget {
                       const Spacer(),
                       Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13)),
                       const SizedBox(height: 2),
-                      Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white.withOpacity(.75), fontSize: 10)),
+                      Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white.withValues(alpha: .75), fontSize: 10)),
                     ],
                   ),
                 ),
@@ -1585,14 +1585,14 @@ class AbsenceOverviewScreen extends StatelessWidget {
                       final person = filtered[index];
                       return ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: (mark == Mark.sh ? AppTheme.red : AppTheme.blue).withOpacity(.16),
+                          backgroundColor: (mark == Mark.sh ? AppTheme.red : AppTheme.blue).withValues(alpha: .16),
                           child: Icon(mark == Mark.sh ? Icons.local_hospital_rounded : Icons.work_rounded, color: mark == Mark.sh ? AppTheme.red : AppTheme.blue),
                         ),
                         title: Text(person.name, style: const TextStyle(fontWeight: FontWeight.w700)),
                         subtitle: Text('${person.rank} · ${person.group}'),
                         trailing: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(color: (mark == Mark.sh ? AppTheme.red : AppTheme.blue).withOpacity(.14), borderRadius: BorderRadius.circular(8)),
+                          decoration: BoxDecoration(color: (mark == Mark.sh ? AppTheme.red : AppTheme.blue).withValues(alpha: .14), borderRadius: BorderRadius.circular(8)),
                           child: Text(markText(mark), style: TextStyle(color: mark == Mark.sh ? AppTheme.red : const Color(0xFF70B8FF), fontWeight: FontWeight.w900)),
                         ),
                       );
@@ -1825,7 +1825,7 @@ class _StatusesScreenState extends State<StatusesScreen> {
             child: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
                 DropdownButtonFormField<Mark>(
-                  value: mark,
+                  initialValue: mark,
                   decoration: const InputDecoration(labelText: 'Статус'),
                   items: const <DropdownMenuItem<Mark>>[
                     DropdownMenuItem(value: Mark.k, child: Text('К')),
@@ -1879,7 +1879,7 @@ class MarkButton extends StatelessWidget {
       case Mark.vd:
         return Colors.blueAccent;
       case Mark.none:
-        return Theme.of(context).colorScheme.outline.withOpacity(.35);
+        return Theme.of(context).colorScheme.outline.withValues(alpha: .35);
     }
   }
 
@@ -1893,7 +1893,7 @@ class MarkButton extends StatelessWidget {
         width: 48,
         height: 34,
         alignment: Alignment.center,
-        decoration: BoxDecoration(color: mark == Mark.none ? color.withOpacity(.15) : color.withOpacity(.2), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withOpacity(.5))),
+        decoration: BoxDecoration(color: mark == Mark.none ? color.withValues(alpha: .15) : color.withValues(alpha: .2), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withValues(alpha: .5))),
         child: Text(mark == Mark.none ? '—' : markText(mark), style: TextStyle(color: mark == Mark.none ? null : color, fontWeight: FontWeight.w800)),
       ),
     );
@@ -2239,7 +2239,7 @@ class _AbsenceScreenState extends State<AbsenceScreen> {
                   width: 42,
                   height: 42,
                   decoration: BoxDecoration(
-                    color: (widget.mark == Mark.sh ? AppTheme.red : AppTheme.gold).withOpacity(.14),
+                    color: (widget.mark == Mark.sh ? AppTheme.red : AppTheme.gold).withValues(alpha: .14),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Icon(widget.mark == Mark.sh ? Icons.local_hospital_outlined : Icons.luggage_outlined, color: widget.mark == Mark.sh ? AppTheme.red : AppTheme.gold),
@@ -2422,7 +2422,7 @@ class SettingsScreen extends StatelessWidget {
         ])),
         if (controller.isAdmin) ...<Widget>[
           const SizedBox(height: 14),
-          Card(child: Column(children: const <Widget>[
+          const Card(child: Column(children: <Widget>[
             ListTile(leading: Icon(Icons.manage_accounts_outlined), title: Text('Користувачі та ролі'), subtitle: Text('Production module: адміністратор створює логіни, ролі та групи')),
             Divider(height: 1),
             ListTile(leading: Icon(Icons.article_outlined), title: Text('Шапки та підписанти'), subtitle: Text('Доступ тільки адміністраторам')),

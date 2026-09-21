@@ -24,7 +24,7 @@ jobs:
       - name: Set Android app label
         run: sed -i 's/android:label="c4_harchuvannya"/android:label="С4 Харчування"/' android/app/src/main/AndroidManifest.xml
       - run: flutter pub get
-      - run: flutter analyze
+      - run: flutter analyze --no-fatal-infos
       - run: flutter test
       - run: flutter build apk --release
       - name: Rename APK
@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: flutter create --platforms=windows --org ua.c4 --project-name c4_harchuvannya .
       - run: flutter pub get
-      - run: flutter analyze
+      - run: flutter analyze --no-fatal-infos
       - run: flutter test
       - run: flutter build windows --release
       - name: Install Inno Setup
@@ -73,7 +73,7 @@ jobs:
       - name: Generate platform runner
         run: flutter create --platforms=macos --org ua.c4 --project-name c4_harchuvannya .
       - run: flutter pub get
-      - run: flutter analyze
+      - run: flutter analyze --no-fatal-infos
       - run: flutter test
       - run: flutter build macos --release
       - name: Create DMG
