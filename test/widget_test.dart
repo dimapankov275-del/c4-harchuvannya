@@ -15,8 +15,8 @@ void main() {
         return <String, dynamic>{
           'appName': 'С4 Харчування',
           'packageName': 'ua.c4.c4_harchuvannya',
-          'version': '0.5.0',
-          'buildNumber': '7',
+          'version': '0.6.0',
+          'buildNumber': '8',
           'buildSignature': '',
           'installerStore': null,
         };
@@ -31,8 +31,6 @@ void main() {
   });
 
   testWidgets('login screen opens', (WidgetTester tester) async {
-    // Prevent the automatic update checker from starting a real network request
-    // during a widget test. Production behavior is unchanged.
     SharedPreferences.setMockInitialValues(<String, Object>{
       'last_update_check': DateTime.now().toIso8601String(),
     });

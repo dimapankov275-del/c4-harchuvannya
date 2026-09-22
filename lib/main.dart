@@ -286,6 +286,30 @@ class AuditEntry {
 
 class AppController extends ChangeNotifier {
   static const groups = <String>['С-41', 'С-42', 'С-43', 'С-44', 'С-45'];
+
+  static const Set<String> special190PlusNames = <String>{
+    "Зінов'єв В.Е.",
+    'Остапчук М.О.',
+    'Несенюк І.В.',
+    'Радовінчик І.О.',
+    'Покормяхо В.І.',
+    'Савченко Є.С.',
+  };
+
+  static String _normalizePersonName(String value) => value
+      .trim()
+      .toLowerCase()
+      .replaceAll('’', "'")
+      .replaceAll('ʼ', "'")
+      .replaceAll('`', "'")
+      .replaceAll(RegExp(r'\s+'), ' ');
+
+  static final Set<String> _special190PlusKeys =
+      special190PlusNames.map(_normalizePersonName).toSet();
+
+  bool is190PlusPerson(Person person) =>
+      _special190PlusKeys.contains(_normalizePersonName(person.name));
+
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   SharedPreferences? _prefs;
@@ -310,7 +334,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.5.0';
+  String appVersion = '0.6.0';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -354,7 +378,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.5.0';
+      appVersion = '0.6.0';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
@@ -979,8 +1003,9 @@ class AppController extends ChangeNotifier {
       );
       online = true;
       lastError = '';
+      final serverMessage1 = response['message1']?.toString() ?? '';
       return <String, String>{
-        'message1': response['message1']?.toString() ?? '',
+        'message1': add190PlusToMessage1(serverMessage1, startDay, end),
         'message2': response['message2']?.toString() ?? '',
       };
     } catch (error) {
@@ -1024,6 +1049,7 @@ class AppController extends ChangeNotifier {
   MealCounts countsFor(DateTime day, Meal meal, {String? group}) {
     final source = people.where((Person p) => group == null || p.group == group).toList();
     var k = 0;
+    var k190Plus = 0;
     var v = 0;
     var sh = 0;
     var vd = 0;
@@ -1031,6 +1057,7 @@ class AppController extends ChangeNotifier {
       switch (person.mark(day, meal)) {
         case Mark.k:
           k++;
+          if (is190PlusPerson(person)) k190Plus++;
           break;
         case Mark.v:
           v++;
@@ -1045,7 +1072,14 @@ class AppController extends ChangeNotifier {
           break;
       }
     }
-    return MealCounts(totalRoster: source.length, k: k, v: v, sh: sh, vd: vd);
+    return MealCounts(
+      totalRoster: source.length,
+      k: k,
+      k190Plus: k190Plus,
+      v: v,
+      sh: sh,
+      vd: vd,
+    );
   }
 
   MealCounts countsForRange(DateTime start, DateTime end, Meal meal, {String? group}) {
@@ -1053,6 +1087,7 @@ class AppController extends ChangeNotifier {
     final last = DateTime(end.year, end.month, end.day);
     var totalRoster = 0;
     var k = 0;
+    var k190Plus = 0;
     var v = 0;
     var sh = 0;
     var vd = 0;
@@ -1061,13 +1096,27 @@ class AppController extends ChangeNotifier {
       final c = countsFor(cursor, meal, group: group);
       totalRoster += c.totalRoster;
       k += c.k;
+      k190Plus += c.k190Plus;
       v += c.v;
       sh += c.sh;
       vd += c.vd;
       cursor = cursor.add(const Duration(days: 1));
     }
 
-    return MealCounts(totalRoster: totalRoster, k: k, v: v, sh: sh, vd: vd);
+    return MealCounts(
+      totalRoster: totalRoster,
+      k: k,
+      k190Plus: k190Plus,
+      v: v,
+      sh: sh,
+      vd: vd,
+    );
+  }
+
+  String _kLabel(MealCounts counts) {
+    if (counts.k <= 0) return '';
+    if (counts.k190Plus <= 0) return '${counts.k}К';
+    return '${counts.k}К, з них ${counts.k190Plus} 190+';
   }
 
   String buildMessage1(DateTime day) {
@@ -1076,7 +1125,8 @@ class AppController extends ChangeNotifier {
       final c = countsFor(day, meal);
       final eating = max(0, c.totalRoster - c.k - c.v - c.sh - c.vd);
       var line = '${mealTitle(meal)} - $eating';
-      if (c.k > 0) line += ' (${c.k}К)';
+      final kLabel = _kLabel(c);
+      if (kLabel.isNotEmpty) line += ' ($kLabel)';
       final absences = <String>[];
       if (c.vd > 0) absences.add('${c.vd} відрядження');
       if (c.v > 0) absences.add('${c.v} відпустка');
@@ -1124,6 +1174,48 @@ class AppController extends ChangeNotifier {
     return blocks.join('\n\n');
   }
 
+  String add190PlusToMessage1(String message, DateTime start, DateTime end) {
+    if (message.trim().isEmpty) return message;
+
+    final daysByLabel = <String, DateTime>{};
+    var cursor = DateTime(start.year, start.month, start.day);
+    final last = DateTime(end.year, end.month, end.day);
+    while (!cursor.isAfter(last)) {
+      daysByLabel[shortDate(cursor)] = cursor;
+      cursor = cursor.add(const Duration(days: 1));
+    }
+
+    var activeDay = DateTime(start.year, start.month, start.day);
+    final lines = message.split('\n');
+    final plainKPattern = RegExp(r'\((\d+)\s*К\)');
+
+    for (var index = 0; index < lines.length; index++) {
+      final trimmed = lines[index].trim();
+      final labeledDay = daysByLabel[trimmed];
+      if (labeledDay != null) {
+        activeDay = labeledDay;
+        continue;
+      }
+
+      for (final meal in Meal.values) {
+        if (!trimmed.startsWith('${mealTitle(meal)} -')) continue;
+        if (trimmed.contains('190+')) break;
+
+        final counts = countsFor(activeDay, meal);
+        if (counts.k190Plus <= 0) break;
+        if (!plainKPattern.hasMatch(lines[index])) break;
+
+        lines[index] = lines[index].replaceFirstMapped(
+          plainKPattern,
+          (match) => '(${match.group(1)}К, з них ${counts.k190Plus} 190+)',
+        );
+        break;
+      }
+    }
+
+    return lines.join('\n');
+  }
+
   String _groupBlock(DateTime day, Meal meal) {
     final lines = <String>['${mealTitle(meal)} ${shortDate(day)}'];
     var total = 0;
@@ -1142,12 +1234,14 @@ class MealCounts {
   const MealCounts({
     required this.totalRoster,
     required this.k,
+    required this.k190Plus,
     required this.v,
     required this.sh,
     required this.vd,
   });
   final int totalRoster;
   final int k;
+  final int k190Plus;
   final int v;
   final int sh;
   final int vd;
@@ -2730,6 +2824,17 @@ class _CalculationScreenState extends State<CalculationScreen> {
 
   Future<void> _setSingleDay(DateTime value) => _setPeriod(value, value);
 
+  Future<void> _setPresetDays(int days) {
+    final today = DateTime.now();
+    return _setPeriod(today, today.add(Duration(days: days - 1)));
+  }
+
+  bool _isPresetFromToday(int days) {
+    final today = DateTime.now();
+    return _sameDay(startDay, today) &&
+        _sameDay(endDay, today.add(Duration(days: days - 1)));
+  }
+
   Future<void> _pickStartDay() async {
     final value = await showDatePicker(
       context: context,
@@ -2771,6 +2876,8 @@ class _CalculationScreenState extends State<CalculationScreen> {
               _sameDay(endDay, DateTime.now().add(const Duration(days: 1))),
           () => _setSingleDay(DateTime.now().add(const Duration(days: 1))),
         ),
+        _segmentButton('3 дні', _isPresetFromToday(3), () => _setPresetDays(3)),
+        _segmentButton('7 днів', _isPresetFromToday(7), () => _setPresetDays(7)),
         OutlinedButton.icon(
           onPressed: loading ? null : _pickStartDay,
           icon: const Icon(Icons.calendar_today_outlined),
@@ -2819,6 +2926,7 @@ class _CalculationScreenState extends State<CalculationScreen> {
                   text: shown2,
                   actions: <Widget>[
                     OutlinedButton.icon(onPressed: () => _copy(shown2), icon: const Icon(Icons.copy_rounded, size: 18), label: const Text('Копіювати №2')),
+                    OutlinedButton.icon(onPressed: () => _copy('$shown1\n\n$shown2'), icon: const Icon(Icons.copy_all_rounded, size: 18), label: const Text('Копіювати все')),
                     OutlinedButton.icon(onPressed: () => Share.share(shown2), icon: const Icon(Icons.share_rounded, size: 18), label: const Text('Поділитися №2')),
                   ],
                 ),
