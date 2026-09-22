@@ -2,9 +2,12 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'app_api.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -219,7 +222,13 @@ class AuditEntry {
 
 class AppController extends ChangeNotifier {
   static const groups = <String>['С-41', 'С-42', 'С-43', 'С-44', 'С-45'];
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+
   SharedPreferences? _prefs;
+  AppApi? _api;
+  String _sessionToken = '';
+  List<Map<String, dynamic>> _pendingOps = <Map<String, dynamic>>[];
+
   AppUser? currentUser;
   ThemeMode themeMode = ThemeMode.dark;
   bool online = true;
@@ -227,6 +236,9 @@ class AppController extends ChangeNotifier {
   bool telegramLinked = false;
   String telegramName = '';
   int pendingChanges = 0;
+  String apiUrl = '';
+  String lastError = '';
+  DateTime? lastSyncedAt;
   List<Person> people = <Person>[];
   List<AuditEntry> history = <AuditEntry>[];
 
@@ -251,25 +263,36 @@ class AppController extends ChangeNotifier {
     ),
   };
 
+  bool get realBackend => apiUrl.trim().isNotEmpty;
+  bool get canEdit => currentUser?.role != UserRole.duty;
+  bool get isAdmin => currentUser?.role == UserRole.admin;
+
+  String get backendLabel {
+    if (!realBackend) return 'Демо-режим';
+    if (currentUser == null) return 'Backend налаштований';
+    if (!online) return 'Немає зв’язку';
+    return 'Google Sheets підключено';
+  }
+
   Future<void> initialize() async {
     _prefs = await SharedPreferences.getInstance();
     final theme = _prefs?.getString('theme') ?? 'dark';
     themeMode = theme == 'light' ? ThemeMode.light : ThemeMode.dark;
     telegramLinked = _prefs?.getBool('telegram_linked') ?? false;
     telegramName = _prefs?.getString('telegram_name') ?? '';
-    online = _prefs?.getBool('online_demo') ?? true;
-    pendingChanges = _prefs?.getInt('pending_changes') ?? 0;
+    apiUrl = _prefs?.getString('api_url') ?? '';
+    _api = apiUrl.isEmpty ? null : AppApi(apiUrl);
 
     final peopleJson = _prefs?.getString('people');
-    if (peopleJson == null || peopleJson.isEmpty) {
-      people = _seedPeople();
-      _seedStatuses();
-      await _savePeople();
-    } else {
+    if (peopleJson != null && peopleJson.isNotEmpty) {
       final list = jsonDecode(peopleJson) as List<dynamic>;
       people = list
           .map((dynamic e) => Person.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList();
+    } else if (!realBackend) {
+      people = _seedPeople();
+      _seedStatuses();
+      await _savePeople();
     }
 
     final historyJson = _prefs?.getString('history');
@@ -279,6 +302,67 @@ class AppController extends ChangeNotifier {
           .map((dynamic e) => AuditEntry.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList();
     }
+
+    final pendingJson = _prefs?.getString('pending_ops');
+    if (pendingJson != null && pendingJson.isNotEmpty) {
+      final list = jsonDecode(pendingJson) as List<dynamic>;
+      _pendingOps = list.map((dynamic e) => Map<String, dynamic>.from(e as Map)).toList();
+    }
+    pendingChanges = realBackend ? _pendingOps.length : (_prefs?.getInt('pending_changes') ?? 0);
+
+    if (realBackend) {
+      _sessionToken = await _secureStorage.read(key: 'c4_session_token') ?? '';
+      if (_sessionToken.isNotEmpty) {
+        try {
+          _api!.token = _sessionToken;
+          final response = await _api!.session();
+          currentUser = _userFromMap(Map<String, dynamic>.from(response['user'] as Map));
+          await syncNow();
+        } catch (error) {
+          lastError = error.toString();
+          currentUser = null;
+          _sessionToken = '';
+          await _secureStorage.delete(key: 'c4_session_token');
+        }
+      }
+    } else {
+      online = _prefs?.getBool('online_demo') ?? true;
+    }
+  }
+
+  AppUser _userFromMap(Map<String, dynamic> map) {
+    final roleRaw = map['role']?.toString() ?? 'duty';
+    final role = roleRaw == 'admin'
+        ? UserRole.admin
+        : roleRaw == 'editor'
+            ? UserRole.editor
+            : UserRole.duty;
+    final rawGroups = (map['groups'] as List?) ?? const <dynamic>[];
+    return AppUser(
+      login: map['login']?.toString() ?? '',
+      displayName: map['displayName']?.toString() ?? map['login']?.toString() ?? '',
+      role: role,
+      groups: rawGroups.map((dynamic e) => e.toString()).toList(),
+    );
+  }
+
+  Future<void> setApiUrl(String value) async {
+    var normalized = value.trim();
+    if (normalized.endsWith('/')) normalized = normalized.substring(0, normalized.length - 1);
+    if (normalized.isNotEmpty && (!normalized.startsWith('https://script.google.com/') || !normalized.contains('/exec'))) {
+      throw ApiException('Потрібне посилання Apps Script Web App, яке закінчується на /exec.');
+    }
+    apiUrl = normalized;
+    _api = apiUrl.isEmpty ? null : AppApi(apiUrl);
+    currentUser = null;
+    _sessionToken = '';
+    _pendingOps.clear();
+    pendingChanges = 0;
+    lastError = '';
+    await _prefs?.setString('api_url', apiUrl);
+    await _prefs?.remove('pending_ops');
+    await _secureStorage.delete(key: 'c4_session_token');
+    notifyListeners();
   }
 
   List<Person> _seedPeople() => <Person>[
@@ -315,10 +399,30 @@ class AppController extends ChangeNotifier {
     return people.where((Person p) => user.groups.contains(p.group)).toList();
   }
 
-  bool get canEdit => currentUser?.role != UserRole.duty;
-  bool get isAdmin => currentUser?.role == UserRole.admin;
+  Future<bool> login(String login, String password, {bool remember = true}) async {
+    lastError = '';
+    if (realBackend) {
+      try {
+        final response = await _api!.login(login.trim(), password);
+        _sessionToken = response['token']?.toString() ?? '';
+        currentUser = _userFromMap(Map<String, dynamic>.from(response['user'] as Map));
+        if (remember) {
+          await _secureStorage.write(key: 'c4_session_token', value: _sessionToken);
+        } else {
+          await _secureStorage.delete(key: 'c4_session_token');
+        }
+        online = true;
+        await syncNow();
+        notifyListeners();
+        return true;
+      } catch (error) {
+        lastError = error.toString();
+        online = false;
+        notifyListeners();
+        return false;
+      }
+    }
 
-  Future<bool> login(String login, String password) async {
     final user = _demoUsers[login.trim()];
     if (user == null) return false;
     final storedPassword = _prefs?.getString('demo_password_${user.login}');
@@ -336,13 +440,32 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    if (realBackend) {
+      try {
+        await _api?.logout();
+      } catch (_) {}
+      _sessionToken = '';
+      await _secureStorage.delete(key: 'c4_session_token');
+    }
     currentUser = null;
     notifyListeners();
   }
 
   Future<bool> changeOwnPassword(String oldPassword, String newPassword) async {
     final user = currentUser;
-    if (user == null || newPassword.length < 6) return false;
+    if (user == null) return false;
+    if (realBackend) {
+      if (newPassword.length < 10) return false;
+      try {
+        await _api!.changePassword(oldPassword: oldPassword, newPassword: newPassword);
+        return true;
+      } catch (error) {
+        lastError = error.toString();
+        notifyListeners();
+        return false;
+      }
+    }
+    if (newPassword.length < 6) return false;
     final storedPassword = _prefs?.getString('demo_password_${user.login}');
     if (oldPassword != (storedPassword ?? _defaultPassword(user.login))) return false;
     await _prefs?.setString('demo_password_${user.login}', newPassword);
@@ -356,6 +479,10 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setOnline(bool value) async {
+    if (realBackend) {
+      if (value) await syncNow();
+      return;
+    }
     online = value;
     await _prefs?.setBool('online_demo', value);
     if (value && pendingChanges > 0) {
@@ -366,14 +493,93 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> syncNow() async {
-    if (!online) return;
+    if (syncing) return;
     syncing = true;
+    lastError = '';
     notifyListeners();
-    await Future<void>.delayed(const Duration(milliseconds: 750));
+
+    if (realBackend) {
+      if (currentUser == null || _api == null) {
+        syncing = false;
+        notifyListeners();
+        return;
+      }
+      try {
+        _api!.token = _sessionToken;
+        await _flushPendingOps();
+        final today = DateTime.now();
+        final response = await _api!.sync(
+          fromDate: dateKey(today.subtract(const Duration(days: 60))),
+          toDate: dateKey(today.add(const Duration(days: 120))),
+          groups: currentUser!.role == UserRole.editor ? currentUser!.groups : null,
+        );
+        final list = (response['people'] as List?) ?? const <dynamic>[];
+        people = list
+            .map((dynamic e) => Person.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+        lastSyncedAt = DateTime.tryParse(response['syncedAt']?.toString() ?? '') ?? DateTime.now();
+        online = true;
+        await _savePeople();
+      } catch (error) {
+        online = false;
+        lastError = error.toString();
+      }
+      pendingChanges = _pendingOps.length;
+      syncing = false;
+      await _savePendingOps();
+      notifyListeners();
+      return;
+    }
+
+    if (!online) {
+      syncing = false;
+      notifyListeners();
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 500));
     pendingChanges = 0;
     await _prefs?.setInt('pending_changes', pendingChanges);
     syncing = false;
     notifyListeners();
+  }
+
+  Future<void> _flushPendingOps() async {
+    if (!realBackend || _api == null || _pendingOps.isEmpty) return;
+    _api!.token = _sessionToken;
+    while (_pendingOps.isNotEmpty) {
+      final op = _pendingOps.first;
+      if (op['type'] == 'setStatus') {
+        await _api!.setStatus(
+          group: op['group'].toString(),
+          personName: op['personName'].toString(),
+          date: op['date'].toString(),
+          meal: op['meal'].toString(),
+          mark: op['mark'].toString(),
+        );
+      }
+      _pendingOps.removeAt(0);
+      await _savePendingOps();
+    }
+  }
+
+  Future<void> _queueStatus(Person person, DateTime day, Meal meal, Mark mark) async {
+    _pendingOps.add(<String, dynamic>{
+      'type': 'setStatus',
+      'group': person.group,
+      'personName': person.name,
+      'date': dateKey(day),
+      'meal': mealKey(meal),
+      'mark': markText(mark),
+      'queuedAt': DateTime.now().toIso8601String(),
+    });
+    pendingChanges = _pendingOps.length;
+    await _savePendingOps();
+  }
+
+  Future<void> _savePendingOps() async {
+    pendingChanges = _pendingOps.length;
+    await _prefs?.setString('pending_ops', jsonEncode(_pendingOps));
+    await _prefs?.setInt('pending_changes', pendingChanges);
   }
 
   Future<void> setMark({
@@ -383,11 +589,10 @@ class AppController extends ChangeNotifier {
     required Mark mark,
   }) async {
     if (!canEdit) return;
-    if (currentUser?.role == UserRole.editor && !(currentUser?.groups.contains(person.group) ?? false)) {
-      return;
-    }
+    if (currentUser?.role == UserRole.editor && !(currentUser?.groups.contains(person.group) ?? false)) return;
     final old = person.mark(day, meal);
     if (old == mark) return;
+
     person.setMark(day, meal, mark);
     history.insert(
       0,
@@ -404,7 +609,23 @@ class AppController extends ChangeNotifier {
         action: 'STATUS_SET',
       ),
     );
-    if (!online) pendingChanges++;
+
+    if (realBackend) {
+      await _queueStatus(person, day, meal, mark);
+      if (online) {
+        try {
+          await _flushPendingOps();
+          online = true;
+          lastError = '';
+        } catch (error) {
+          online = false;
+          lastError = error.toString();
+        }
+      }
+    } else if (!online) {
+      pendingChanges++;
+    }
+
     await _saveAll();
     notifyListeners();
   }
@@ -440,6 +661,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> updatePerson(Person person, String rank, String name) async {
     if (!canEdit) return;
+    if (realBackend) {
+      lastError = 'Редагування ПІБ/звання підключимо окремим безпечним модулем, щоб не пошкодити довідник рапортів.';
+      notifyListeners();
+      return;
+    }
     final old = '${person.rank} | ${person.name}';
     person.rank = rank.trim();
     person.name = name.trim();
@@ -461,6 +687,27 @@ class AppController extends ChangeNotifier {
     if (!online) pendingChanges++;
     await _saveAll();
     notifyListeners();
+  }
+
+  Future<Map<String, String>> calculationPreview(DateTime day) async {
+    if (!realBackend || _api == null || currentUser == null) {
+      return <String, String>{'message1': buildMessage1(day), 'message2': buildMessage2(day)};
+    }
+    try {
+      _api!.token = _sessionToken;
+      final response = await _api!.calculationPreview(startDate: dateKey(day), endDate: dateKey(day));
+      online = true;
+      lastError = '';
+      return <String, String>{
+        'message1': response['message1']?.toString() ?? '',
+        'message2': response['message2']?.toString() ?? '',
+      };
+    } catch (error) {
+      online = false;
+      lastError = error.toString();
+      notifyListeners();
+      return <String, String>{'message1': buildMessage1(day), 'message2': buildMessage2(day)};
+    }
   }
 
   Future<void> linkTelegramDemo() async {
@@ -487,6 +734,7 @@ class AppController extends ChangeNotifier {
     await _savePeople();
     await _prefs?.setString('history', jsonEncode(history.take(500).map((AuditEntry e) => e.toJson()).toList()));
     await _prefs?.setInt('pending_changes', pendingChanges);
+    if (realBackend) await _savePendingOps();
   }
 
   MealCounts countsFor(DateTime day, Meal meal, {String? group}) {
@@ -710,12 +958,21 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final loginController = TextEditingController(text: 'admin');
-  final passwordController = TextEditingController(text: 'admin123');
+  final loginController = TextEditingController();
+  final passwordController = TextEditingController();
   bool obscure = true;
   bool busy = false;
   bool remember = true;
   String error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.controller.realBackend) {
+      loginController.text = 'admin';
+      passwordController.text = 'admin123';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -732,7 +989,7 @@ class _LoginScreenState extends State<LoginScreen> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(22),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 390),
+              constraints: const BoxConstraints(maxWidth: 420),
               child: Column(
                 children: <Widget>[
                   const AppLogo(size: 72),
@@ -740,7 +997,20 @@ class _LoginScreenState extends State<LoginScreen> {
                   const Text('С4 Харчування', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: Colors.white)),
                   const SizedBox(height: 5),
                   const Text('Система обліку харчування', style: TextStyle(color: Color(0xFF91A8BC))),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 13),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: widget.controller.realBackend ? const Color(0xFF123C2D) : const Color(0xFF27394B),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                      Icon(widget.controller.realBackend ? Icons.cloud_done_outlined : Icons.science_outlined, size: 16, color: widget.controller.realBackend ? const Color(0xFF4BE19A) : const Color(0xFF9AB0C2)),
+                      const SizedBox(width: 7),
+                      Text(widget.controller.backendLabel, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                    ]),
+                  ),
+                  const SizedBox(height: 18),
                   Container(
                     padding: const EdgeInsets.all(18),
                     decoration: BoxDecoration(
@@ -755,10 +1025,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         TextField(
                           controller: loginController,
                           style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: 'Логін',
-                            prefixIcon: Icon(Icons.person_outline),
-                          ),
+                          decoration: const InputDecoration(hintText: 'Логін', prefixIcon: Icon(Icons.person_outline)),
                         ),
                         const SizedBox(height: 11),
                         TextField(
@@ -780,12 +1047,10 @@ class _LoginScreenState extends State<LoginScreen> {
                           Text(error, style: const TextStyle(color: Color(0xFFFF8187))),
                         ],
                         const SizedBox(height: 8),
-                        Row(
-                          children: <Widget>[
-                            Checkbox(value: remember, onChanged: (value) => setState(() => remember = value ?? true)),
-                            const Text('Запам’ятати мене', style: TextStyle(color: Color(0xFFC4D2DE), fontSize: 12)),
-                          ],
-                        ),
+                        Row(children: <Widget>[
+                          Checkbox(value: remember, onChanged: (value) => setState(() => remember = value ?? true)),
+                          const Text('Запам’ятати мене', style: TextStyle(color: Color(0xFFC4D2DE), fontSize: 12)),
+                        ]),
                         const SizedBox(height: 8),
                         FilledButton(
                           onPressed: busy ? null : _login,
@@ -796,11 +1061,22 @@ class _LoginScreenState extends State<LoginScreen> {
                                 : const Text('Увійти'),
                           ),
                         ),
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: busy ? null : _configureBackend,
+                          icon: const Icon(Icons.dns_outlined, size: 18),
+                          label: Text(widget.controller.realBackend ? 'Змінити сервер' : 'Підключити Google Sheets'),
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 12),
-                  const Text('Демо: admin / admin123', style: TextStyle(color: Color(0xFF66849C), fontSize: 11)),
+                  Text(
+                    widget.controller.realBackend
+                        ? 'Backend v0.3 · авторизація через Apps Script'
+                        : 'Демо: admin / admin123',
+                    style: const TextStyle(color: Color(0xFF66849C), fontSize: 11),
+                  ),
                 ],
               ),
             ),
@@ -810,17 +1086,53 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  Future<void> _configureBackend() async {
+    final field = TextEditingController(text: widget.controller.apiUrl);
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Підключення до Apps Script'),
+        content: SizedBox(
+          width: 540,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+            const Text('Встав Web App URL, який закінчується на /exec.'),
+            const SizedBox(height: 12),
+            TextField(controller: field, decoration: const InputDecoration(labelText: 'https://script.google.com/macros/s/.../exec')),
+          ]),
+        ),
+        actions: <Widget>[
+          if (widget.controller.realBackend)
+            TextButton(onPressed: () { field.text = ''; Navigator.pop(context, true); }, child: const Text('Повернути демо')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Скасувати')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Зберегти')),
+        ],
+      ),
+    );
+    if (save != true) return;
+    try {
+      await widget.controller.setApiUrl(field.text);
+      if (!mounted) return;
+      setState(() {
+        error = '';
+        loginController.clear();
+        passwordController.clear();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => error = e.toString());
+    }
+  }
+
   Future<void> _login() async {
     setState(() {
       busy = true;
       error = '';
     });
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    final ok = await widget.controller.login(loginController.text, passwordController.text);
+    final ok = await widget.controller.login(loginController.text, passwordController.text, remember: remember);
     if (!mounted) return;
     setState(() {
       busy = false;
-      if (!ok) error = 'Невірний логін або пароль.';
+      if (!ok) error = widget.controller.lastError.isNotEmpty ? widget.controller.lastError : 'Невірний логін або пароль.';
     });
   }
 }
@@ -1660,7 +1972,7 @@ class _PersonnelScreenState extends State<PersonnelScreen> {
                 leading: CircleAvatar(child: Text(person.group.substring(person.group.length - 2))),
                 title: Text(person.name, style: const TextStyle(fontWeight: FontWeight.w700)),
                 subtitle: Text('${person.rank} · ${person.group}'),
-                trailing: widget.controller.canEdit ? IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _editPerson(person)) : null,
+                trailing: widget.controller.canEdit && !widget.controller.realBackend ? IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _editPerson(person)) : (widget.controller.realBackend ? const Tooltip(message: 'Редагування ПІБ/звання буде у v0.4', child: Icon(Icons.lock_outline, size: 19)) : null),
               );
             },
           ),
@@ -1930,63 +2242,103 @@ class CalculationScreen extends StatefulWidget {
 
 class _CalculationScreenState extends State<CalculationScreen> {
   DateTime day = DateTime.now();
+  String message1 = '';
+  String message2 = '';
+  String error = '';
+  bool loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() { loading = true; error = ''; });
+    final result = await widget.controller.calculationPreview(day);
+    if (!mounted) return;
+    setState(() {
+      message1 = result['message1'] ?? '';
+      message2 = result['message2'] ?? '';
+      loading = false;
+      error = widget.controller.realBackend && !widget.controller.online ? widget.controller.lastError : '';
+    });
+  }
+
+  Future<void> _setDay(DateTime value) async {
+    setState(() => day = value);
+    await _load();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final message1 = widget.controller.buildMessage1(day);
-    final message2 = widget.controller.buildMessage2(day);
+    final shown1 = message1.isEmpty ? widget.controller.buildMessage1(day) : message1;
+    final shown2 = message2.isEmpty ? widget.controller.buildMessage2(day) : message2;
     return PageFrame(
       title: 'Розрахунок',
-      subtitle: 'Актуальний розрахунок харчування',
+      subtitle: widget.controller.realBackend ? 'Розрахунок із Google Sheets / FAST CACHE' : 'Демо-розрахунок',
       actions: <Widget>[
-        _segmentButton('Сьогодні', _sameDay(day, DateTime.now()), () => setState(() => day = DateTime.now())),
-        _segmentButton('Завтра', _sameDay(day, DateTime.now().add(const Duration(days: 1))), () => setState(() => day = DateTime.now().add(const Duration(days: 1)))),
+        _segmentButton('Сьогодні', _sameDay(day, DateTime.now()), () => _setDay(DateTime.now())),
+        _segmentButton('Завтра', _sameDay(day, DateTime.now().add(const Duration(days: 1))), () => _setDay(DateTime.now().add(const Duration(days: 1)))),
         OutlinedButton.icon(
           onPressed: () async {
             final value = await showDatePicker(context: context, initialDate: day, firstDate: DateTime(2025), lastDate: DateTime(2035));
-            if (value != null) setState(() => day = value);
+            if (value != null) await _setDay(value);
           },
           icon: const Icon(Icons.calendar_month_outlined),
           label: Text(longDate(day)),
         ),
+        IconButton(onPressed: loading ? null : _load, icon: loading ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh_rounded)),
       ],
-      child: LayoutBuilder(
-        builder: (BuildContext context, BoxConstraints c) {
-          final messages = Column(
-            children: <Widget>[
-              MessageCard(
-                title: 'Повідомлення №1',
-                badge: 'Telegram',
-                text: message1,
-                actions: <Widget>[
-                  FilledButton.icon(
-                    onPressed: widget.controller.telegramLinked ? _telegramDemo : () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: widget.controller))),
-                    icon: const Icon(Icons.send_rounded, size: 18),
-                    label: Text(widget.controller.telegramLinked ? 'Надіслати' : 'Прив’язати Telegram'),
-                  ),
-                  OutlinedButton.icon(onPressed: () => _copy(message1), icon: const Icon(Icons.copy_rounded, size: 18), label: const Text('Копіювати №1')),
-                  OutlinedButton.icon(onPressed: () => Share.share(message1), icon: const Icon(Icons.share_rounded, size: 18), label: const Text('Поділитися')),
-                ],
-              ),
-              const SizedBox(height: 12),
-              MessageCard(
-                title: 'Повідомлення №2',
-                badge: 'Групи',
-                text: message2,
-                actions: <Widget>[
-                  OutlinedButton.icon(onPressed: () => _copy(message2), icon: const Icon(Icons.copy_rounded, size: 18), label: const Text('Копіювати №2')),
-                  OutlinedButton.icon(onPressed: () => Share.share(message2), icon: const Icon(Icons.share_rounded, size: 18), label: const Text('Поділитися №2')),
-                ],
-              ),
-            ],
-          );
-          final summary = CalculationSummary(controller: widget.controller, day: day);
-          if (c.maxWidth < 820) {
-            return Column(children: <Widget>[messages, const SizedBox(height: 12), SizedBox(width: double.infinity, child: summary)]);
-          }
-          return Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[Expanded(flex: 12, child: messages), const SizedBox(width: 14), Expanded(flex: 7, child: summary)]);
-        },
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+        if (error.isNotEmpty) ...<Widget>[
+          Card(child: Padding(padding: const EdgeInsets.all(12), child: Row(children: <Widget>[
+            const Icon(Icons.cloud_off_rounded, color: AppTheme.orange),
+            const SizedBox(width: 10),
+            Expanded(child: Text('Сервер недоступний. Показано локальну копію.\n$error')),
+          ]))),
+          const SizedBox(height: 12),
+        ],
+        LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints c) {
+            final messages = Column(
+              children: <Widget>[
+                MessageCard(
+                  title: 'Повідомлення №1',
+                  badge: widget.controller.realBackend ? 'Google Sheets' : 'Демо',
+                  text: shown1,
+                  actions: <Widget>[
+                    FilledButton.icon(
+                      onPressed: widget.controller.realBackend
+                          ? null
+                          : (widget.controller.telegramLinked ? _telegramDemo : () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: widget.controller)))),
+                      icon: const Icon(Icons.send_rounded, size: 18),
+                      label: Text(widget.controller.realBackend ? 'Telegram · v0.4' : (widget.controller.telegramLinked ? 'Надіслати' : 'Прив’язати Telegram')),
+                    ),
+                    OutlinedButton.icon(onPressed: () => _copy(shown1), icon: const Icon(Icons.copy_rounded, size: 18), label: const Text('Копіювати №1')),
+                    OutlinedButton.icon(onPressed: () => Share.share(shown1), icon: const Icon(Icons.share_rounded, size: 18), label: const Text('Поділитися')),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                MessageCard(
+                  title: 'Повідомлення №2',
+                  badge: 'Групи',
+                  text: shown2,
+                  actions: <Widget>[
+                    OutlinedButton.icon(onPressed: () => _copy(shown2), icon: const Icon(Icons.copy_rounded, size: 18), label: const Text('Копіювати №2')),
+                    OutlinedButton.icon(onPressed: () => Share.share(shown2), icon: const Icon(Icons.share_rounded, size: 18), label: const Text('Поділитися №2')),
+                  ],
+                ),
+              ],
+            );
+            final summary = CalculationSummary(controller: widget.controller, day: day);
+            if (c.maxWidth < 820) {
+              return Column(children: <Widget>[messages, const SizedBox(height: 12), SizedBox(width: double.infinity, child: summary)]);
+            }
+            return Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[Expanded(flex: 12, child: messages), const SizedBox(width: 14), Expanded(flex: 7, child: summary)]);
+          },
+        ),
+      ]),
     );
   }
 
@@ -2382,7 +2734,7 @@ class TelegramScreen extends StatelessWidget {
                     const SizedBox(height: 18),
                     OutlinedButton.icon(onPressed: controller.unlinkTelegram, icon: const Icon(Icons.link_off), label: const Text('Відв’язати')),
                   ] else ...<Widget>[
-                    const Text('У production цей одноразовий код надсилається боту. У v0.2 кнопка нижче імітує успішну прив’язку.'),
+                    const Text('У production цей одноразовий код надсилається боту. У демо-режимі кнопка нижче імітує успішну прив’язку.'),
                     const SizedBox(height: 16),
                     SelectableText('$code', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, letterSpacing: 4)),
                     const SizedBox(height: 16),
@@ -2405,6 +2757,11 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = controller.currentUser!;
+    final syncSubtitle = controller.realBackend
+        ? (controller.online
+            ? 'Google Sheets · ${controller.pendingChanges == 0 ? 'синхронізовано' : 'черга ${controller.pendingChanges}'}'
+            : 'Офлайн · черга ${controller.pendingChanges}')
+        : (controller.online ? 'Онлайн (демо)' : 'Офлайн · черга ${controller.pendingChanges}');
     return PageFrame(
       title: 'Налаштування',
       subtitle: '${user.displayName} · ${roleTitle(user.role)}',
@@ -2412,26 +2769,72 @@ class SettingsScreen extends StatelessWidget {
         Card(child: Column(children: <Widget>[
           ListTile(leading: const Icon(Icons.palette_outlined), title: const Text('Тема'), subtitle: Text(controller.themeMode == ThemeMode.dark ? 'Темна' : 'Світла'), trailing: Switch(value: controller.themeMode == ThemeMode.dark, onChanged: (bool value) => controller.setTheme(value ? ThemeMode.dark : ThemeMode.light))),
           const Divider(height: 1),
-          ListTile(leading: const Icon(Icons.wifi_off_outlined), title: const Text('Демо офлайн-режим'), subtitle: Text(controller.online ? 'Онлайн' : 'Офлайн · черга ${controller.pendingChanges}'), trailing: Switch(value: !controller.online, onChanged: (bool value) => controller.setOnline(!value))),
+          ListTile(
+            leading: Icon(controller.realBackend ? Icons.cloud_done_outlined : Icons.science_outlined),
+            title: Text(controller.realBackend ? 'Backend / Google Sheets' : 'Демо-режим'),
+            subtitle: Text(controller.realBackend ? controller.apiUrl : 'Реальний сервер ще не підключений'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _configureBackend(context),
+          ),
           const Divider(height: 1),
-          ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Мій Telegram'), subtitle: Text(controller.telegramLinked ? controller.telegramName : 'Не підключено'), onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
+          ListTile(
+            leading: Icon(controller.online ? Icons.sync_rounded : Icons.cloud_off_rounded),
+            title: const Text('Синхронізація'),
+            subtitle: Text(syncSubtitle),
+            trailing: controller.syncing ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh_rounded),
+            onTap: controller.syncing ? null : controller.syncNow,
+          ),
+          const Divider(height: 1),
+          ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Мій Telegram'), subtitle: Text(controller.realBackend ? 'Підключимо до app-користувача у v0.4' : (controller.telegramLinked ? controller.telegramName : 'Не підключено')), onTap: controller.realBackend ? null : () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
           const Divider(height: 1),
           ListTile(leading: const Icon(Icons.password_outlined), title: const Text('Змінити пароль'), onTap: () => _changePassword(context)),
           const Divider(height: 1),
-          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Перевірити оновлення'), subtitle: Text('v0.2.0 · UI preview')),
+          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Версія застосунку'), subtitle: Text('v0.3.0 · Backend Sync')),
         ])),
         if (controller.isAdmin) ...<Widget>[
           const SizedBox(height: 14),
           const Card(child: Column(children: <Widget>[
-            ListTile(leading: Icon(Icons.manage_accounts_outlined), title: Text('Користувачі та ролі'), subtitle: Text('Production module: адміністратор створює логіни, ролі та групи')),
+            ListTile(leading: Icon(Icons.manage_accounts_outlined), title: Text('Користувачі та ролі'), subtitle: Text('Серверна модель ролей уже працює; UI керування — наступний крок')), 
             Divider(height: 1),
-            ListTile(leading: Icon(Icons.article_outlined), title: Text('Шапки та підписанти'), subtitle: Text('Доступ тільки адміністраторам')),
+            ListTile(leading: Icon(Icons.article_outlined), title: Text('Шапки та підписанти'), subtitle: Text('Поточні налаштування Apps Script не змінювались')),
           ])),
+        ],
+        if (controller.lastError.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 14),
+          Card(child: Padding(padding: const EdgeInsets.all(14), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+            const Icon(Icons.warning_amber_rounded, color: AppTheme.orange),
+            const SizedBox(width: 10),
+            Expanded(child: Text(controller.lastError)),
+          ]))),
         ],
         const SizedBox(height: 14),
         SizedBox(width: double.infinity, child: OutlinedButton.icon(onPressed: controller.logout, icon: const Icon(Icons.logout), label: const Text('Вийти'))),
       ]),
     );
+  }
+
+  Future<void> _configureBackend(BuildContext context) async {
+    final field = TextEditingController(text: controller.apiUrl);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Backend URL'),
+        content: SizedBox(width: 540, child: TextField(controller: field, decoration: const InputDecoration(labelText: 'Apps Script Web App /exec URL'))),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Скасувати')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Зберегти')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await controller.setApiUrl(field.text);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backend змінено. Увійдіть повторно.')));
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+    }
   }
 
   Future<void> _changePassword(BuildContext context) async {
@@ -2444,7 +2847,7 @@ class SettingsScreen extends StatelessWidget {
         content: SizedBox(width: 400, child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
           TextField(controller: old, obscureText: true, decoration: const InputDecoration(labelText: 'Поточний пароль')),
           const SizedBox(height: 10),
-          TextField(controller: next, obscureText: true, decoration: const InputDecoration(labelText: 'Новий пароль · мін. 6 символів')),
+          TextField(controller: next, obscureText: true, decoration: InputDecoration(labelText: controller.realBackend ? 'Новий пароль · мін. 10 символів' : 'Новий пароль · мін. 6 символів')),
         ])),
         actions: <Widget>[
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Скасувати')),
@@ -2455,7 +2858,8 @@ class SettingsScreen extends StatelessWidget {
     if (ok == true) {
       final success = await controller.changeOwnPassword(old.text, next.text);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success ? 'Пароль змінено.' : 'Перевір поточний пароль і довжину нового.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success ? 'Пароль змінено.' : (controller.lastError.isNotEmpty ? controller.lastError : 'Перевір поточний пароль і довжину нового.'))));
     }
   }
 }
+
