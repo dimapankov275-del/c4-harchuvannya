@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -8,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_api.dart';
+import 'update_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -93,6 +95,26 @@ Mark markFromText(String value) {
 }
 
 String mealKey(Meal meal) => meal.name;
+
+const Duration appNoticeDuration = Duration(seconds: 5);
+
+void showAppNotice(
+  BuildContext context,
+  String message, {
+  Color? backgroundColor,
+  SnackBarAction? action,
+}) {
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.clearSnackBars();
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(message),
+      duration: appNoticeDuration,
+      backgroundColor: backgroundColor,
+      action: action,
+    ),
+  );
+}
 
 class AppUser {
   AppUser({
@@ -287,6 +309,14 @@ class AppController extends ChangeNotifier {
   bool managedUsersLoading = false;
   String managedUsersError = '';
 
+  final UpdateService _updateService = UpdateService();
+  String appVersion = '0.5.0';
+  bool checkingUpdate = false;
+  AppUpdateInfo? availableUpdate;
+  bool updatePromptShown = false;
+  String updateError = '';
+  DateTime? lastUpdateCheck;
+
   final Map<String, AppUser> _demoUsers = <String, AppUser>{
     'admin': AppUser(
       login: 'admin',
@@ -321,6 +351,30 @@ class AppController extends ChangeNotifier {
 
   Future<void> initialize() async {
     _prefs = await SharedPreferences.getInstance();
+    try {
+      appVersion = await _updateService.currentVersion();
+    } catch (_) {
+      appVersion = '0.5.0';
+    }
+
+    final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
+    lastUpdateCheck = DateTime.tryParse(lastCheckRaw);
+    final cachedUpdateRaw = _prefs?.getString('cached_update_info') ?? '';
+    if (cachedUpdateRaw.isNotEmpty) {
+      try {
+        final cached = AppUpdateInfo.fromJson(
+          Map<String, dynamic>.from(jsonDecode(cachedUpdateRaw) as Map),
+        );
+        if (cached != null && UpdateService.compareVersions(cached.latestVersion, appVersion) > 0) {
+          availableUpdate = cached;
+        } else {
+          await _prefs?.remove('cached_update_info');
+        }
+      } catch (_) {
+        await _prefs?.remove('cached_update_info');
+      }
+    }
+
     final theme = _prefs?.getString('theme') ?? 'dark';
     themeMode = theme == 'light' ? ThemeMode.light : ThemeMode.dark;
     telegramLinked = _prefs?.getBool('telegram_linked') ?? false;
@@ -373,6 +427,55 @@ class AppController extends ChangeNotifier {
     } else {
       online = _prefs?.getBool('online_demo') ?? true;
     }
+
+    unawaited(checkForUpdates());
+  }
+
+  Future<AppUpdateInfo?> checkForUpdates({bool force = false}) async {
+    if (checkingUpdate) return availableUpdate;
+    final now = DateTime.now();
+    if (!force && lastUpdateCheck != null && now.difference(lastUpdateCheck!) < const Duration(hours: 6)) {
+      return availableUpdate;
+    }
+
+    checkingUpdate = true;
+    updateError = '';
+    notifyListeners();
+    try {
+      final info = await _updateService.checkForUpdate(currentVersion: appVersion);
+      availableUpdate = info;
+      lastUpdateCheck = now;
+      await _prefs?.setString('last_update_check', now.toIso8601String());
+      if (info == null) {
+        await _prefs?.remove('cached_update_info');
+      } else {
+        await _prefs?.setString('cached_update_info', jsonEncode(info.toJson()));
+        updatePromptShown = false;
+      }
+      return info;
+    } catch (error) {
+      updateError = error.toString();
+      return availableUpdate;
+    } finally {
+      checkingUpdate = false;
+      notifyListeners();
+    }
+  }
+
+  void markUpdatePromptShown() {
+    updatePromptShown = true;
+  }
+
+  Future<void> openAvailableUpdate() async {
+    final info = availableUpdate;
+    if (info == null) return;
+    await _updateService.openDownload(info);
+  }
+
+  Future<void> openAvailableUpdateReleasePage() async {
+    final info = availableUpdate;
+    if (info == null) return;
+    await _updateService.openReleasePage(info);
   }
 
   AppUser _userFromMap(Map<String, dynamic> map) {
@@ -1005,13 +1108,127 @@ class C4FoodApp extends StatelessWidget {
           themeMode: controller.themeMode,
           theme: AppTheme.light,
           darkTheme: AppTheme.dark,
-          home: controller.currentUser == null
-              ? LoginScreen(controller: controller)
-              : HomeShell(controller: controller),
+          home: AppUpdateGate(
+            controller: controller,
+            child: controller.currentUser == null
+                ? LoginScreen(controller: controller)
+                : HomeShell(controller: controller),
+          ),
         );
       },
     );
   }
+}
+
+class AppUpdateGate extends StatefulWidget {
+  const AppUpdateGate({super.key, required this.controller, required this.child});
+  final AppController controller;
+  final Widget child;
+
+  @override
+  State<AppUpdateGate> createState() => _AppUpdateGateState();
+}
+
+class _AppUpdateGateState extends State<AppUpdateGate> {
+  bool _scheduled = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final info = widget.controller.availableUpdate;
+    if (info != null && !widget.controller.updatePromptShown && !_scheduled) {
+      _scheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        await showAppUpdateDialog(context, widget.controller, info);
+        widget.controller.markUpdatePromptShown();
+        _scheduled = false;
+      });
+    }
+    return widget.child;
+  }
+}
+
+Future<void> showAppUpdateDialog(
+  BuildContext context,
+  AppController controller,
+  AppUpdateInfo info,
+) async {
+  await showDialog<void>(
+    context: context,
+    barrierDismissible: !info.mandatory,
+    builder: (BuildContext dialogContext) => PopScope(
+      canPop: !info.mandatory,
+      child: AlertDialog(
+        title: Row(children: <Widget>[
+          const Icon(Icons.system_update_alt_rounded),
+          const SizedBox(width: 10),
+          Expanded(child: Text('Доступне оновлення v${info.latestVersion}')),
+        ]),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Встановлена версія: v${controller.appVersion}'),
+              if (info.mandatory) ...<Widget>[
+                const SizedBox(height: 10),
+                const Row(children: <Widget>[
+                  Icon(Icons.warning_amber_rounded, color: AppTheme.orange),
+                  SizedBox(width: 8),
+                  Expanded(child: Text('Це оновлення обов’язкове для подальшої роботи.')),
+                ]),
+              ],
+              if (info.notes.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 14),
+                const Text('Що нового:', style: TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 6),
+                for (final note in info.notes.take(6))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+                      const Text('• '),
+                      Expanded(child: Text(note)),
+                    ]),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              const Text(
+                'Windows завантажить Setup.exe, Android — APK, macOS — DMG. Встановлення підтверджує користувач.',
+                style: TextStyle(fontSize: 11, color: Color(0xFF91A8BC)),
+              ),
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          if (!info.mandatory)
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Пізніше')),
+          TextButton(
+            onPressed: () async {
+              try {
+                await controller.openAvailableUpdateReleasePage();
+              } catch (error) {
+                if (dialogContext.mounted) showAppNotice(dialogContext, error.toString());
+              }
+            },
+            child: const Text('Що нового'),
+          ),
+          FilledButton.icon(
+            onPressed: () async {
+              try {
+                await controller.openAvailableUpdate();
+                if (!info.mandatory && dialogContext.mounted) Navigator.pop(dialogContext);
+              } catch (error) {
+                if (dialogContext.mounted) showAppNotice(dialogContext, error.toString());
+              }
+            },
+            icon: const Icon(Icons.download_rounded),
+            label: const Text('Оновити'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class AppTheme {
@@ -2280,10 +2497,14 @@ class _StatusesScreenState extends State<StatusesScreen> {
     if (chosen == null || chosen == old) return;
     await widget.controller.setMark(person: person, day: day, meal: meal, mark: chosen);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('${person.name}: ${mealTitle(meal)} → ${markText(chosen).isEmpty ? 'очищено' : markText(chosen)}'),
-      action: SnackBarAction(label: 'Скасувати', onPressed: () => widget.controller.setMark(person: person, day: day, meal: meal, mark: old)),
-    ));
+    showAppNotice(
+      context,
+      '${person.name}: ${mealTitle(meal)} → ${markText(chosen).isEmpty ? 'очищено' : markText(chosen)}',
+      action: SnackBarAction(
+        label: 'Скасувати',
+        onPressed: () => widget.controller.setMark(person: person, day: day, meal: meal, mark: old),
+      ),
+    );
   }
 
   Future<void> _wholeDay(Person person, Mark? directMark) async {
@@ -2340,7 +2561,7 @@ class _StatusesScreenState extends State<StatusesScreen> {
     );
     if (confirmed == true) {
       await widget.controller.bulkSet(selected: chosenPeople, start: start, end: end, meals: meals, mark: mark);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Масові зміни застосовано.')));
+      if (mounted) showAppNotice(context, 'Масові зміни застосовано.');
     }
   }
 }
@@ -2521,11 +2742,11 @@ class _CalculationScreenState extends State<CalculationScreen> {
 
   void _copy(String text) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Скопійовано.')));
+    showAppNotice(context, 'Скопійовано.');
   }
 
   void _telegramDemo() {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Демо: два повідомлення поставлено в чергу Telegram.')));
+    showAppNotice(context, 'Демо: два повідомлення поставлено в чергу Telegram.');
   }
 }
 
@@ -2660,7 +2881,7 @@ class DocumentsScreen extends StatelessWidget {
     );
   }
 
-  void _demo(BuildContext context, String text) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _demo(BuildContext context, String text) => showAppNotice(context, text);
 }
 
 class DocumentCard extends StatelessWidget {
@@ -2821,12 +3042,14 @@ class _UsersScreenState extends State<UsersScreen> {
       await action();
       if (!mounted) return;
       if (success != null) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
+        showAppNotice(context, success);
       }
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.toString()), backgroundColor: Theme.of(context).colorScheme.error),
+      showAppNotice(
+        context,
+        error.toString(),
+        backgroundColor: Theme.of(context).colorScheme.error,
       );
     }
   }
@@ -3048,9 +3271,7 @@ class _UsersScreenState extends State<UsersScreen> {
       await _run(() async {
         final count = await widget.controller.resetManagedUserPassword(user, controller.text);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Пароль скинуто. Завершено сесій: $count.')),
-        );
+        showAppNotice(context, 'Пароль скинуто. Завершено сесій: $count.');
       });
     }
     controller.dispose();
@@ -3085,9 +3306,7 @@ class _UsersScreenState extends State<UsersScreen> {
     await _run(() async {
       final count = await widget.controller.terminateManagedUserSessions(user);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Завершено сесій користувача ${user.login}: $count.')),
-      );
+      showAppNotice(context, 'Завершено сесій користувача ${user.login}: $count.');
     });
   }
 
@@ -3368,16 +3587,44 @@ class SettingsScreen extends StatelessWidget {
             onTap: controller.syncing ? null : controller.syncNow,
           ),
           const Divider(height: 1),
-          ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Мій Telegram'), subtitle: Text(controller.realBackend ? 'Підключимо до app-користувача у v0.4' : (controller.telegramLinked ? controller.telegramName : 'Не підключено')), onTap: controller.realBackend ? null : () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
+          ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Мій Telegram'), subtitle: Text(controller.realBackend ? 'Персональне підключення буде у v0.6' : (controller.telegramLinked ? controller.telegramName : 'Не підключено')), onTap: controller.realBackend ? null : () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
           const Divider(height: 1),
           ListTile(leading: const Icon(Icons.password_outlined), title: const Text('Змінити пароль'), onTap: () => _changePassword(context)),
           const Divider(height: 1),
-          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Версія застосунку'), subtitle: Text('v0.4.0 · Користувачі та ролі')),
+          ListTile(
+            leading: const Icon(Icons.system_update_outlined),
+            title: const Text('Оновлення застосунку'),
+            subtitle: Text(
+              controller.availableUpdate != null
+                  ? 'v${controller.appVersion} → доступна v${controller.availableUpdate!.latestVersion}'
+                  : 'v${controller.appVersion} · актуальна версія',
+            ),
+            trailing: controller.checkingUpdate
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.chevron_right),
+            onTap: controller.checkingUpdate
+                ? null
+                : () async {
+                    final info = await controller.checkForUpdates(force: true);
+                    if (!context.mounted) return;
+                    if (info == null) {
+                      showAppNotice(
+                        context,
+                        controller.updateError.isEmpty
+                            ? 'У вас остання версія v${controller.appVersion}.'
+                            : 'Не вдалося перевірити оновлення: ${controller.updateError}',
+                      );
+                      return;
+                    }
+                    await showAppUpdateDialog(context, controller, info);
+                    controller.markUpdatePromptShown();
+                  },
+          ),
         ])),
         if (controller.isAdmin) ...<Widget>[
           const SizedBox(height: 14),
           const Card(child: Column(children: <Widget>[
-            ListTile(leading: Icon(Icons.manage_accounts_outlined), title: Text('Користувачі та ролі'), subtitle: Text('Серверна модель ролей уже працює; UI керування — наступний крок')), 
+            ListTile(leading: Icon(Icons.manage_accounts_outlined), title: Text('Користувачі та ролі'), subtitle: Text('Керування користувачами та серверні обмеження працюють')), 
             Divider(height: 1),
             ListTile(leading: Icon(Icons.article_outlined), title: Text('Шапки та підписанти'), subtitle: Text('Поточні налаштування Apps Script не змінювались')),
           ])),
@@ -3413,10 +3660,10 @@ class SettingsScreen extends StatelessWidget {
     try {
       await controller.setApiUrl(field.text);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backend змінено. Увійдіть повторно.')));
+      showAppNotice(context, 'Backend змінено. Увійдіть повторно.');
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+      showAppNotice(context, e.toString());
     }
   }
 
@@ -3441,7 +3688,14 @@ class SettingsScreen extends StatelessWidget {
     if (ok == true) {
       final success = await controller.changeOwnPassword(old.text, next.text);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success ? 'Пароль змінено.' : (controller.lastError.isNotEmpty ? controller.lastError : 'Перевір поточний пароль і довжину нового.'))));
+      showAppNotice(
+        context,
+        success
+            ? 'Пароль змінено.'
+            : (controller.lastError.isNotEmpty
+                ? controller.lastError
+                : 'Перевір поточний пароль і довжину нового.'),
+      );
     }
   }
 }
