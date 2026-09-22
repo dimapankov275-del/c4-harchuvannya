@@ -88,6 +88,70 @@ class AppApi {
     });
   }
 
+  Future<Map<String, dynamic>> listUsers() =>
+      _post(<String, dynamic>{'action': 'listUsers'});
+
+  Future<Map<String, dynamic>> createUser({
+    required String login,
+    required String displayName,
+    required String role,
+    required List<String> groups,
+    required String password,
+  }) {
+    return _post(<String, dynamic>{
+      'action': 'createUser',
+      'login': login,
+      'displayName': displayName,
+      'role': role,
+      'groups': groups,
+      'password': password,
+    });
+  }
+
+  Future<Map<String, dynamic>> updateUser({
+    required String login,
+    required String displayName,
+    required String role,
+    required List<String> groups,
+  }) {
+    return _post(<String, dynamic>{
+      'action': 'updateUser',
+      'login': login,
+      'displayName': displayName,
+      'role': role,
+      'groups': groups,
+    });
+  }
+
+  Future<Map<String, dynamic>> setUserDisabled({
+    required String login,
+    required bool disabled,
+  }) {
+    return _post(<String, dynamic>{
+      'action': 'setUserDisabled',
+      'login': login,
+      'disabled': disabled,
+    });
+  }
+
+  Future<Map<String, dynamic>> resetUserPassword({
+    required String login,
+    required String newPassword,
+  }) {
+    return _post(<String, dynamic>{
+      'action': 'resetUserPassword',
+      'login': login,
+      'newPassword': newPassword,
+    });
+  }
+
+  Future<Map<String, dynamic>> terminateUserSessions(String login) {
+    return _post(<String, dynamic>{
+      'action': 'terminateUserSessions',
+      'login': login,
+    });
+  }
+
   Future<void> logout() async {
     if (token.isEmpty) return;
     try {

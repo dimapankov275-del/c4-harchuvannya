@@ -108,6 +108,48 @@ class AppUser {
   final List<String> groups;
 }
 
+class ManagedUser {
+  ManagedUser({
+    required this.login,
+    required this.displayName,
+    required this.role,
+    required this.groups,
+    required this.disabled,
+    required this.activeSessions,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String login;
+  final String displayName;
+  final UserRole role;
+  final List<String> groups;
+  final bool disabled;
+  final int activeSessions;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  static ManagedUser fromJson(Map<String, dynamic> map) {
+    final roleRaw = map['role']?.toString() ?? 'duty';
+    final role = roleRaw == 'admin'
+        ? UserRole.admin
+        : roleRaw == 'editor'
+            ? UserRole.editor
+            : UserRole.duty;
+    final rawGroups = (map['groups'] as List?) ?? const <dynamic>[];
+    return ManagedUser(
+      login: map['login']?.toString() ?? '',
+      displayName: map['displayName']?.toString() ?? map['login']?.toString() ?? '',
+      role: role,
+      groups: rawGroups.map((dynamic e) => e.toString()).toList(),
+      disabled: map['disabled'] == true,
+      activeSessions: int.tryParse(map['activeSessions']?.toString() ?? '') ?? 0,
+      createdAt: DateTime.tryParse(map['createdAt']?.toString() ?? ''),
+      updatedAt: DateTime.tryParse(map['updatedAt']?.toString() ?? ''),
+    );
+  }
+}
+
 class Person {
   Person({
     required this.id,
@@ -241,6 +283,9 @@ class AppController extends ChangeNotifier {
   DateTime? lastSyncedAt;
   List<Person> people = <Person>[];
   List<AuditEntry> history = <AuditEntry>[];
+  List<ManagedUser> managedUsers = <ManagedUser>[];
+  bool managedUsersLoading = false;
+  String managedUsersError = '';
 
   final Map<String, AppUser> _demoUsers = <String, AppUser>{
     'admin': AppUser(
@@ -470,6 +515,132 @@ class AppController extends ChangeNotifier {
     if (oldPassword != (storedPassword ?? _defaultPassword(user.login))) return false;
     await _prefs?.setString('demo_password_${user.login}', newPassword);
     return true;
+  }
+
+  String _roleApiValue(UserRole role) {
+    switch (role) {
+      case UserRole.admin:
+        return 'admin';
+      case UserRole.editor:
+        return 'editor';
+      case UserRole.duty:
+        return 'duty';
+    }
+  }
+
+  Future<void> loadManagedUsers() async {
+    if (!isAdmin) return;
+    managedUsersLoading = true;
+    managedUsersError = '';
+    notifyListeners();
+
+    if (!realBackend) {
+      managedUsers = _demoUsers.values
+          .map((AppUser user) => ManagedUser(
+                login: user.login,
+                displayName: user.displayName,
+                role: user.role,
+                groups: user.groups,
+                disabled: false,
+                activeSessions: user.login == currentUser?.login ? 1 : 0,
+                createdAt: null,
+                updatedAt: null,
+              ))
+          .toList();
+      managedUsersLoading = false;
+      notifyListeners();
+      return;
+    }
+
+    try {
+      _api!.token = _sessionToken;
+      final response = await _api!.listUsers();
+      final raw = (response['users'] as List?) ?? const <dynamic>[];
+      managedUsers = raw
+          .map((dynamic value) => ManagedUser.fromJson(Map<String, dynamic>.from(value as Map)))
+          .toList();
+      online = true;
+    } catch (error) {
+      managedUsersError = error.toString();
+      lastError = managedUsersError;
+      online = false;
+    } finally {
+      managedUsersLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> createManagedUser({
+    required String login,
+    required String displayName,
+    required UserRole role,
+    required List<String> groups,
+    required String password,
+  }) async {
+    if (!isAdmin || !realBackend || _api == null) {
+      throw ApiException('Керування користувачами доступне тільки адміністратору з підключеним backend.');
+    }
+    _api!.token = _sessionToken;
+    await _api!.createUser(
+      login: login.trim(),
+      displayName: displayName.trim(),
+      role: _roleApiValue(role),
+      groups: role == UserRole.editor ? groups : AppController.groups,
+      password: password,
+    );
+    await loadManagedUsers();
+  }
+
+  Future<void> updateManagedUser({
+    required ManagedUser user,
+    required String displayName,
+    required UserRole role,
+    required List<String> groups,
+  }) async {
+    if (!isAdmin || !realBackend || _api == null) {
+      throw ApiException('Керування користувачами доступне тільки адміністратору з підключеним backend.');
+    }
+    _api!.token = _sessionToken;
+    final response = await _api!.updateUser(
+      login: user.login,
+      displayName: displayName.trim(),
+      role: _roleApiValue(role),
+      groups: role == UserRole.editor ? groups : AppController.groups,
+    );
+    if (user.login == currentUser?.login && response['user'] is Map) {
+      final updated = Map<String, dynamic>.from(response['user'] as Map);
+      currentUser = _userFromMap(updated);
+    }
+    await loadManagedUsers();
+  }
+
+  Future<void> setManagedUserDisabled(ManagedUser user, bool disabled) async {
+    if (!isAdmin || !realBackend || _api == null) {
+      throw ApiException('Керування користувачами доступне тільки адміністратору з підключеним backend.');
+    }
+    _api!.token = _sessionToken;
+    await _api!.setUserDisabled(login: user.login, disabled: disabled);
+    await loadManagedUsers();
+  }
+
+  Future<int> resetManagedUserPassword(ManagedUser user, String newPassword) async {
+    if (!isAdmin || !realBackend || _api == null) {
+      throw ApiException('Керування користувачами доступне тільки адміністратору з підключеним backend.');
+    }
+    _api!.token = _sessionToken;
+    final response = await _api!.resetUserPassword(login: user.login, newPassword: newPassword);
+    await loadManagedUsers();
+    return int.tryParse(response['terminatedSessions']?.toString() ?? '') ?? 0;
+  }
+
+  Future<int> terminateManagedUserSessions(ManagedUser user) async {
+    if (!isAdmin || !realBackend || _api == null) {
+      throw ApiException('Керування користувачами доступне тільки адміністратору з підключеним backend.');
+    }
+    _api!.token = _sessionToken;
+    final response = await _api!.terminateUserSessions(user.login);
+    await loadManagedUsers();
+    return int.tryParse(response['terminatedSessions']?.toString() ?? '') ?? 0;
   }
 
   Future<void> setTheme(ThemeMode mode) async {
@@ -1073,7 +1244,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 12),
                   Text(
                     widget.controller.realBackend
-                        ? 'Backend v0.3 · авторизація через Apps Script'
+                        ? 'Backend v0.4 · авторизація та ролі через Apps Script'
                         : 'Демо: admin / admin123',
                     style: const TextStyle(color: Color(0xFF66849C), fontSize: 11),
                   ),
@@ -2622,42 +2793,454 @@ class _AbsenceScreenState extends State<AbsenceScreen> {
   }
 }
 
-class UsersScreen extends StatelessWidget {
+class UsersScreen extends StatefulWidget {
   const UsersScreen({super.key, required this.controller});
   final AppController controller;
 
   @override
-  Widget build(BuildContext context) {
-    const users = <List<String>>[
-      <String>['admin', 'Адміністратор', 'Усі групи', 'Активний'],
-      <String>['editor43', 'Редактор', 'С-43', 'Активний'],
-      <String>['duty', 'Черговий курсу', 'Перегляд розрахунків', 'Активний'],
-    ];
-    return PageFrame(
-      title: 'Користувачі',
-      subtitle: 'Керування доступом та ролями',
-      actions: <Widget>[FilledButton.icon(onPressed: () {}, icon: const Icon(Icons.person_add_alt_1), label: const Text('Додати користувача'))],
-      child: Card(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            columns: const <DataColumn>[
-              DataColumn(label: Text('Логін')),
-              DataColumn(label: Text('Роль')),
-              DataColumn(label: Text('Доступ')),
-              DataColumn(label: Text('Статус')),
-              DataColumn(label: Text('')),
-            ],
-            rows: users.map((u) => DataRow(cells: <DataCell>[
-              DataCell(Text(u[0], style: const TextStyle(fontWeight: FontWeight.w700))),
-              DataCell(Text(u[1])),
-              DataCell(Text(u[2])),
-              DataCell(Row(mainAxisSize: MainAxisSize.min, children: <Widget>[const Icon(Icons.circle, size: 9, color: Color(0xFF50D990)), const SizedBox(width: 6), Text(u[3])])),
-              const DataCell(Icon(Icons.more_horiz)),
-            ])).toList(),
+  State<UsersScreen> createState() => _UsersScreenState();
+}
+
+class _UsersScreenState extends State<UsersScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => widget.controller.loadManagedUsers());
+  }
+
+  String _roleLabel(UserRole role) => roleTitle(role);
+
+  String _accessLabel(ManagedUser user) {
+    if (user.role == UserRole.admin) return 'Усі групи';
+    if (user.role == UserRole.duty) return 'Перегляд усіх груп';
+    return user.groups.isEmpty ? 'Без груп' : user.groups.join(', ');
+  }
+
+  Future<void> _run(Future<void> Function() action, {String? success}) async {
+    try {
+      await action();
+      if (!mounted) return;
+      if (success != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.toString()), backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    }
+  }
+
+  Future<void> _openUserDialog({ManagedUser? user}) async {
+    final isNew = user == null;
+    final loginController = TextEditingController(text: user?.login ?? '');
+    final nameController = TextEditingController(text: user?.displayName ?? '');
+    final passwordController = TextEditingController();
+    var role = user?.role ?? UserRole.editor;
+    final selectedGroups = <String>{...(user?.groups ?? const <String>['С-43'])};
+    var obscurePassword = true;
+    String localError = '';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) => StatefulBuilder(
+        builder: (BuildContext context, void Function(void Function()) setLocal) => AlertDialog(
+          title: Text(isNew ? 'Додати користувача' : 'Редагувати ${user.login}'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  TextField(
+                    controller: loginController,
+                    enabled: isNew,
+                    autocorrect: false,
+                    decoration: const InputDecoration(labelText: 'Логін', hintText: 'наприклад: editor43'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Ім’я / назва'),
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<UserRole>(
+                    initialValue: role,
+                    decoration: const InputDecoration(labelText: 'Роль'),
+                    items: UserRole.values
+                        .map((UserRole value) => DropdownMenuItem<UserRole>(
+                              value: value,
+                              child: Text(_roleLabel(value)),
+                            ))
+                        .toList(),
+                    onChanged: (UserRole? value) {
+                      if (value == null) return;
+                      setLocal(() {
+                        role = value;
+                        if (role == UserRole.editor && selectedGroups.isEmpty) {
+                          selectedGroups.add('С-43');
+                        }
+                      });
+                    },
+                  ),
+                  if (role == UserRole.editor) ...<Widget>[
+                    const SizedBox(height: 14),
+                    const Text('Дозволені групи', style: TextStyle(fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 7),
+                    Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: AppController.groups.map((String group) {
+                        final selected = selectedGroups.contains(group);
+                        return FilterChip(
+                          label: Text(group),
+                          selected: selected,
+                          onSelected: (bool value) {
+                            setLocal(() {
+                              if (value) {
+                                selectedGroups.add(group);
+                              } else {
+                                selectedGroups.remove(group);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                  if (isNew) ...<Widget>[
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: passwordController,
+                      obscureText: obscurePassword,
+                      decoration: InputDecoration(
+                        labelText: 'Тимчасовий пароль',
+                        helperText: 'Мінімум 10 символів',
+                        suffixIcon: IconButton(
+                          onPressed: () => setLocal(() => obscurePassword = !obscurePassword),
+                          icon: Icon(obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (localError.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 10),
+                    Text(localError, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ],
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Роль і доступ до груп перевіряються на сервері, а не лише в інтерфейсі.',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF91A8BC)),
+                  ),
+                ],
+              ),
+            ),
           ),
+          actions: <Widget>[
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+            FilledButton(
+              onPressed: () {
+                final login = loginController.text.trim();
+                final name = nameController.text.trim();
+                final password = passwordController.text;
+                String error = '';
+                if (isNew && login.length < 4) {
+                  error = 'Логін має містити щонайменше 4 символи.';
+                } else if (name.isEmpty) {
+                  error = 'Вкажіть ім’я/назву користувача.';
+                } else if (role == UserRole.editor && selectedGroups.isEmpty) {
+                  error = 'Виберіть хоча б одну групу.';
+                } else if (isNew && password.length < 10) {
+                  error = 'Пароль має містити щонайменше 10 символів.';
+                }
+                if (error.isNotEmpty) {
+                  setLocal(() => localError = error);
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
+              child: Text(isNew ? 'Створити' : 'Зберегти'),
+            ),
+          ],
         ),
       ),
+    );
+
+    if (confirmed == true) {
+      if (isNew) {
+        await _run(
+          () => widget.controller.createManagedUser(
+            login: loginController.text,
+            displayName: nameController.text,
+            role: role,
+            groups: selectedGroups.toList(),
+            password: passwordController.text,
+          ),
+          success: 'Користувача створено.',
+        );
+      } else {
+        await _run(
+          () => widget.controller.updateManagedUser(
+            user: user,
+            displayName: nameController.text,
+            role: role,
+            groups: selectedGroups.toList(),
+          ),
+          success: 'Дані користувача оновлено.',
+        );
+      }
+    }
+
+    loginController.dispose();
+    nameController.dispose();
+    passwordController.dispose();
+  }
+
+  Future<void> _resetPassword(ManagedUser user) async {
+    final controller = TextEditingController();
+    var obscure = true;
+    String error = '';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => StatefulBuilder(
+        builder: (BuildContext context, void Function(void Function()) setLocal) => AlertDialog(
+          title: Text('Скинути пароль · ${user.login}'),
+          content: SizedBox(
+            width: 430,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+              TextField(
+                controller: controller,
+                obscureText: obscure,
+                decoration: InputDecoration(
+                  labelText: 'Новий тимчасовий пароль',
+                  helperText: 'Мінімум 10 символів. Поточний пароль адміністратор не бачить.',
+                  suffixIcon: IconButton(
+                    onPressed: () => setLocal(() => obscure = !obscure),
+                    icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  ),
+                ),
+              ),
+              if (error.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              ],
+            ]),
+          ),
+          actions: <Widget>[
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+            FilledButton(
+              onPressed: () {
+                if (controller.text.length < 10) {
+                  setLocal(() => error = 'Пароль має містити щонайменше 10 символів.');
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Скинути пароль'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed == true) {
+      await _run(() async {
+        final count = await widget.controller.resetManagedUserPassword(user, controller.text);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Пароль скинуто. Завершено сесій: $count.')),
+        );
+      });
+    }
+    controller.dispose();
+  }
+
+  Future<void> _toggleBlocked(ManagedUser user) async {
+    final targetDisabled = !user.disabled;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: Text(targetDisabled ? 'Заблокувати ${user.login}?' : 'Розблокувати ${user.login}?'),
+        content: Text(
+          targetDisabled
+              ? 'Користувач більше не зможе увійти. Його активні сесії будуть завершені.'
+              : 'Користувач знову зможе входити зі своїм поточним паролем.',
+        ),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: Text(targetDisabled ? 'Заблокувати' : 'Розблокувати')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _run(
+        () => widget.controller.setManagedUserDisabled(user, targetDisabled),
+        success: targetDisabled ? 'Користувача заблоковано.' : 'Користувача розблоковано.',
+      );
+    }
+  }
+
+  Future<void> _terminateSessions(ManagedUser user) async {
+    await _run(() async {
+      final count = await widget.controller.terminateManagedUserSessions(user);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Завершено сесій користувача ${user.login}: $count.')),
+      );
+    });
+  }
+
+  Widget _status(ManagedUser user) {
+    final active = !user.disabled;
+    return Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+      Icon(Icons.circle, size: 9, color: active ? const Color(0xFF50D990) : AppTheme.red),
+      const SizedBox(width: 6),
+      Text(active ? 'Активний' : 'Заблокований'),
+    ]);
+  }
+
+  Widget _actions(ManagedUser user) {
+    final self = user.login == widget.controller.currentUser?.login;
+    return PopupMenuButton<String>(
+      tooltip: 'Дії',
+      onSelected: (String value) async {
+        if (value == 'edit') await _openUserDialog(user: user);
+        if (value == 'reset') await _resetPassword(user);
+        if (value == 'sessions') await _terminateSessions(user);
+        if (value == 'block') await _toggleBlocked(user);
+      },
+      itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+        const PopupMenuItem<String>(value: 'edit', child: ListTile(leading: Icon(Icons.edit_outlined), title: Text('Редагувати'), contentPadding: EdgeInsets.zero)),
+        if (!self)
+          const PopupMenuItem<String>(value: 'reset', child: ListTile(leading: Icon(Icons.password_outlined), title: Text('Скинути пароль'), contentPadding: EdgeInsets.zero)),
+        if (!self)
+          const PopupMenuItem<String>(value: 'sessions', child: ListTile(leading: Icon(Icons.phonelink_erase_outlined), title: Text('Завершити сесії'), contentPadding: EdgeInsets.zero)),
+        if (!self)
+          PopupMenuItem<String>(
+            value: 'block',
+            child: ListTile(
+              leading: Icon(user.disabled ? Icons.lock_open_outlined : Icons.block_outlined),
+              title: Text(user.disabled ? 'Розблокувати' : 'Заблокувати'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+      ],
+      child: const Padding(padding: EdgeInsets.all(8), child: Icon(Icons.more_horiz)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final users = c.managedUsers;
+    return PageFrame(
+      title: 'Користувачі',
+      subtitle: 'Реальні акаунти, ролі та серверні права доступу',
+      actions: <Widget>[
+        OutlinedButton.icon(
+          onPressed: c.managedUsersLoading ? null : c.loadManagedUsers,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('Оновити'),
+        ),
+        FilledButton.icon(
+          onPressed: !c.realBackend ? null : () => _openUserDialog(),
+          icon: const Icon(Icons.person_add_alt_1),
+          label: const Text('Додати користувача'),
+        ),
+      ],
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+        if (!c.realBackend)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Для реального керування користувачами підключіть Apps Script backend v0.4.'),
+            ),
+          ),
+        if (c.managedUsersError.isNotEmpty) ...<Widget>[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(children: <Widget>[
+                Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error),
+                const SizedBox(width: 10),
+                Expanded(child: Text(c.managedUsersError)),
+                TextButton(onPressed: c.loadManagedUsers, child: const Text('Повторити')),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (c.managedUsersLoading && users.isEmpty)
+          const Card(child: Padding(padding: EdgeInsets.all(36), child: Center(child: CircularProgressIndicator())))
+        else if (users.isEmpty)
+          const Card(child: Padding(padding: EdgeInsets.all(30), child: Center(child: Text('Користувачів не знайдено.'))))
+        else
+          LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              if (constraints.maxWidth < 760) {
+                return Column(
+                  children: users.map((ManagedUser user) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+                          CircleAvatar(child: Text(user.displayName.isEmpty ? '?' : user.displayName[0].toUpperCase())),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+                              Row(children: <Widget>[
+                                Expanded(child: Text(user.displayName, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15))),
+                                _actions(user),
+                              ]),
+                              Text('@${user.login}', style: const TextStyle(color: Color(0xFF91A8BC))),
+                              const SizedBox(height: 8),
+                              Wrap(spacing: 7, runSpacing: 7, children: <Widget>[
+                                Chip(label: Text(_roleLabel(user.role))),
+                                Chip(label: Text(_accessLabel(user))),
+                                Chip(label: Text('Сесій: ${user.activeSessions}')),
+                              ]),
+                              const SizedBox(height: 6),
+                              _status(user),
+                            ]),
+                          ),
+                        ]),
+                      ),
+                    ),
+                  )).toList(),
+                );
+              }
+
+              return Card(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    columns: const <DataColumn>[
+                      DataColumn(label: Text('Користувач')),
+                      DataColumn(label: Text('Роль')),
+                      DataColumn(label: Text('Доступ')),
+                      DataColumn(label: Text('Сесії')),
+                      DataColumn(label: Text('Статус')),
+                      DataColumn(label: Text('')),
+                    ],
+                    rows: users.map((ManagedUser user) => DataRow(cells: <DataCell>[
+                      DataCell(Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+                        Text(user.displayName, style: const TextStyle(fontWeight: FontWeight.w800)),
+                        Text('@${user.login}', style: const TextStyle(fontSize: 11, color: Color(0xFF91A8BC))),
+                      ])),
+                      DataCell(Text(_roleLabel(user.role))),
+                      DataCell(Text(_accessLabel(user))),
+                      DataCell(Text('${user.activeSessions}')),
+                      DataCell(_status(user)),
+                      DataCell(_actions(user)),
+                    ])).toList(),
+                  ),
+                ),
+              );
+            },
+          ),
+      ]),
     );
   }
 }
@@ -2789,7 +3372,7 @@ class SettingsScreen extends StatelessWidget {
           const Divider(height: 1),
           ListTile(leading: const Icon(Icons.password_outlined), title: const Text('Змінити пароль'), onTap: () => _changePassword(context)),
           const Divider(height: 1),
-          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Версія застосунку'), subtitle: Text('v0.3.1 · Redirect Fix')),
+          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Версія застосунку'), subtitle: Text('v0.4.0 · Користувачі та ролі')),
         ])),
         if (controller.isAdmin) ...<Widget>[
           const SizedBox(height: 14),
