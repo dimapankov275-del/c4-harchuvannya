@@ -963,13 +963,20 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<Map<String, String>> calculationPreview(DateTime day) async {
+  Future<Map<String, String>> calculationPreview(DateTime startDay, [DateTime? endDay]) async {
+    final end = endDay ?? startDay;
     if (!realBackend || _api == null || currentUser == null) {
-      return <String, String>{'message1': buildMessage1(day), 'message2': buildMessage2(day)};
+      return <String, String>{
+        'message1': buildMessage1Range(startDay, end),
+        'message2': buildMessage2Range(startDay, end),
+      };
     }
     try {
       _api!.token = _sessionToken;
-      final response = await _api!.calculationPreview(startDate: dateKey(day), endDate: dateKey(day));
+      final response = await _api!.calculationPreview(
+        startDate: dateKey(startDay),
+        endDate: dateKey(end),
+      );
       online = true;
       lastError = '';
       return <String, String>{
@@ -980,7 +987,10 @@ class AppController extends ChangeNotifier {
       online = false;
       lastError = error.toString();
       notifyListeners();
-      return <String, String>{'message1': buildMessage1(day), 'message2': buildMessage2(day)};
+      return <String, String>{
+        'message1': buildMessage1Range(startDay, end),
+        'message2': buildMessage2Range(startDay, end),
+      };
     }
   }
 
@@ -1038,6 +1048,28 @@ class AppController extends ChangeNotifier {
     return MealCounts(totalRoster: source.length, k: k, v: v, sh: sh, vd: vd);
   }
 
+  MealCounts countsForRange(DateTime start, DateTime end, Meal meal, {String? group}) {
+    var cursor = DateTime(start.year, start.month, start.day);
+    final last = DateTime(end.year, end.month, end.day);
+    var totalRoster = 0;
+    var k = 0;
+    var v = 0;
+    var sh = 0;
+    var vd = 0;
+
+    while (!cursor.isAfter(last)) {
+      final c = countsFor(cursor, meal, group: group);
+      totalRoster += c.totalRoster;
+      k += c.k;
+      v += c.v;
+      sh += c.sh;
+      vd += c.vd;
+      cursor = cursor.add(const Duration(days: 1));
+    }
+
+    return MealCounts(totalRoster: totalRoster, k: k, v: v, sh: sh, vd: vd);
+  }
+
   String buildMessage1(DateTime day) {
     final lines = <String>[shortDate(day), ''];
     for (final meal in Meal.values) {
@@ -1061,6 +1093,34 @@ class AppController extends ChangeNotifier {
     blocks.add(_groupBlock(previous, Meal.dinner));
     blocks.add(_groupBlock(day, Meal.breakfast));
     blocks.add(_groupBlock(day, Meal.lunch));
+    return blocks.join('\n\n');
+  }
+
+  String buildMessage1Range(DateTime start, DateTime end) {
+    var cursor = DateTime(start.year, start.month, start.day);
+    final last = DateTime(end.year, end.month, end.day);
+    if (cursor.isAfter(last)) return '';
+    if (cursor == last) return buildMessage1(cursor);
+
+    final blocks = <String>[];
+    while (!cursor.isAfter(last)) {
+      blocks.add(buildMessage1(cursor));
+      cursor = cursor.add(const Duration(days: 1));
+    }
+    return blocks.join('\n\n');
+  }
+
+  String buildMessage2Range(DateTime start, DateTime end) {
+    var cursor = DateTime(start.year, start.month, start.day);
+    final last = DateTime(end.year, end.month, end.day);
+    if (cursor.isAfter(last)) return '';
+    if (cursor == last) return buildMessage2(cursor);
+
+    final blocks = <String>[];
+    while (!cursor.isAfter(last)) {
+      blocks.add(buildMessage2(cursor));
+      cursor = cursor.add(const Duration(days: 1));
+    }
     return blocks.join('\n\n');
   }
 
@@ -2633,7 +2693,8 @@ class CalculationScreen extends StatefulWidget {
 }
 
 class _CalculationScreenState extends State<CalculationScreen> {
-  DateTime day = DateTime.now();
+  DateTime startDay = DateTime.now();
+  DateTime endDay = DateTime.now();
   String message1 = '';
   String message2 = '';
   String error = '';
@@ -2647,7 +2708,7 @@ class _CalculationScreenState extends State<CalculationScreen> {
 
   Future<void> _load() async {
     setState(() { loading = true; error = ''; });
-    final result = await widget.controller.calculationPreview(day);
+    final result = await widget.controller.calculationPreview(startDay, endDay);
     if (!mounted) return;
     setState(() {
       message1 = result['message1'] ?? '';
@@ -2657,28 +2718,68 @@ class _CalculationScreenState extends State<CalculationScreen> {
     });
   }
 
-  Future<void> _setDay(DateTime value) async {
-    setState(() => day = value);
+  Future<void> _setPeriod(DateTime start, DateTime end) async {
+    final normalizedStart = DateTime(start.year, start.month, start.day);
+    final normalizedEnd = DateTime(end.year, end.month, end.day);
+    setState(() {
+      startDay = normalizedStart;
+      endDay = normalizedEnd.isBefore(normalizedStart) ? normalizedStart : normalizedEnd;
+    });
     await _load();
+  }
+
+  Future<void> _setSingleDay(DateTime value) => _setPeriod(value, value);
+
+  Future<void> _pickStartDay() async {
+    final value = await showDatePicker(
+      context: context,
+      initialDate: startDay,
+      firstDate: DateTime(2025),
+      lastDate: DateTime(2035),
+    );
+    if (value == null) return;
+    await _setPeriod(value, endDay.isBefore(value) ? value : endDay);
+  }
+
+  Future<void> _pickEndDay() async {
+    final value = await showDatePicker(
+      context: context,
+      initialDate: endDay.isBefore(startDay) ? startDay : endDay,
+      firstDate: startDay,
+      lastDate: DateTime(2035),
+    );
+    if (value == null) return;
+    await _setPeriod(startDay, value);
   }
 
   @override
   Widget build(BuildContext context) {
-    final shown1 = message1.isEmpty ? widget.controller.buildMessage1(day) : message1;
-    final shown2 = message2.isEmpty ? widget.controller.buildMessage2(day) : message2;
+    final shown1 = message1.isEmpty ? widget.controller.buildMessage1Range(startDay, endDay) : message1;
+    final shown2 = message2.isEmpty ? widget.controller.buildMessage2Range(startDay, endDay) : message2;
     return PageFrame(
       title: 'Розрахунок',
       subtitle: widget.controller.realBackend ? 'Розрахунок із Google Sheets / FAST CACHE' : 'Демо-розрахунок',
       actions: <Widget>[
-        _segmentButton('Сьогодні', _sameDay(day, DateTime.now()), () => _setDay(DateTime.now())),
-        _segmentButton('Завтра', _sameDay(day, DateTime.now().add(const Duration(days: 1))), () => _setDay(DateTime.now().add(const Duration(days: 1)))),
+        _segmentButton(
+          'Сьогодні',
+          _sameDay(startDay, DateTime.now()) && _sameDay(endDay, DateTime.now()),
+          () => _setSingleDay(DateTime.now()),
+        ),
+        _segmentButton(
+          'Завтра',
+          _sameDay(startDay, DateTime.now().add(const Duration(days: 1))) &&
+              _sameDay(endDay, DateTime.now().add(const Duration(days: 1))),
+          () => _setSingleDay(DateTime.now().add(const Duration(days: 1))),
+        ),
         OutlinedButton.icon(
-          onPressed: () async {
-            final value = await showDatePicker(context: context, initialDate: day, firstDate: DateTime(2025), lastDate: DateTime(2035));
-            if (value != null) await _setDay(value);
-          },
-          icon: const Icon(Icons.calendar_month_outlined),
-          label: Text(longDate(day)),
+          onPressed: loading ? null : _pickStartDay,
+          icon: const Icon(Icons.calendar_today_outlined),
+          label: Text('З ${shortDate(startDay)}'),
+        ),
+        OutlinedButton.icon(
+          onPressed: loading ? null : _pickEndDay,
+          icon: const Icon(Icons.event_available_outlined),
+          label: Text('По ${shortDate(endDay)}'),
         ),
         IconButton(onPressed: loading ? null : _load, icon: loading ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh_rounded)),
       ],
@@ -2723,7 +2824,11 @@ class _CalculationScreenState extends State<CalculationScreen> {
                 ),
               ],
             );
-            final summary = CalculationSummary(controller: widget.controller, day: day);
+            final summary = CalculationSummary(
+              controller: widget.controller,
+              startDay: startDay,
+              endDay: endDay,
+            );
             if (c.maxWidth < 820) {
               return Column(children: <Widget>[messages, const SizedBox(height: 12), SizedBox(width: double.infinity, child: summary)]);
             }
@@ -2791,15 +2896,25 @@ class MessageCard extends StatelessWidget {
 }
 
 class CalculationSummary extends StatelessWidget {
-  const CalculationSummary({super.key, required this.controller, required this.day});
+  const CalculationSummary({
+    super.key,
+    required this.controller,
+    required this.startDay,
+    required this.endDay,
+  });
   final AppController controller;
-  final DateTime day;
+  final DateTime startDay;
+  final DateTime endDay;
 
   @override
   Widget build(BuildContext context) {
-    final breakfast = controller.countsFor(day, Meal.breakfast);
-    final lunch = controller.countsFor(day, Meal.lunch);
-    final dinner = controller.countsFor(day, Meal.dinner);
+    final breakfast = controller.countsForRange(startDay, endDay, Meal.breakfast);
+    final lunch = controller.countsForRange(startDay, endDay, Meal.lunch);
+    final dinner = controller.countsForRange(startDay, endDay, Meal.dinner);
+    final dayCount = DateTime(endDay.year, endDay.month, endDay.day)
+            .difference(DateTime(startDay.year, startDay.month, startDay.day))
+            .inDays +
+        1;
     int eat(MealCounts c) => max(0, c.totalRoster - c.k - c.v - c.sh - c.vd);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2810,7 +2925,10 @@ class CalculationSummary extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                const Text('Підсумок', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                Text(
+                  dayCount == 1 ? 'Підсумок' : 'Підсумок за період · $dayCount дн.',
+                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                ),
                 const SizedBox(height: 8),
                 _row(context, 'Сніданок', eat(breakfast)),
                 _row(context, 'Обід', eat(lunch)),
