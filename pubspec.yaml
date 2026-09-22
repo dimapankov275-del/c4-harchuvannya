@@ -1,7 +1,7 @@
 name: c4_harchuvannya
 publish_to: 'none'
 description: Cross-platform client for C4 food accounting and calculations.
-version: 0.3.0+4
+version: 0.3.1+5
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

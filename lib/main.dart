@@ -2789,7 +2789,7 @@ class SettingsScreen extends StatelessWidget {
           const Divider(height: 1),
           ListTile(leading: const Icon(Icons.password_outlined), title: const Text('Змінити пароль'), onTap: () => _changePassword(context)),
           const Divider(height: 1),
-          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Версія застосунку'), subtitle: Text('v0.3.0 · Backend Sync')),
+          const ListTile(leading: Icon(Icons.system_update_outlined), title: Text('Версія застосунку'), subtitle: Text('v0.3.1 · Redirect Fix')),
         ])),
         if (controller.isAdmin) ...<Widget>[
           const SizedBox(height: 14),
