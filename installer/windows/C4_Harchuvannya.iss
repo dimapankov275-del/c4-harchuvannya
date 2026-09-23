@@ -1,5 +1,5 @@
 #define MyAppName "С4 Харчування"
-#define MyAppVersion "0.5.0"
+#define MyAppVersion "0.8.0"
 #define MyAppPublisher "С4"
 #define MyAppExeName "c4_harchuvannya.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={localappdata}\Programs\C4 Harchuvannya
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=C4_Harchuvannya_v0.5.0_Setup
+OutputBaseFilename=C4_Harchuvannya_v0.8.0_Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

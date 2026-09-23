@@ -15,8 +15,8 @@ void main() {
         return <String, dynamic>{
           'appName': 'С4 Харчування',
           'packageName': 'ua.c4.c4_harchuvannya',
-          'version': '0.6.0',
-          'buildNumber': '8',
+          'version': '0.8.0',
+          'buildNumber': '9',
           'buildSignature': '',
           'installerStore': null,
         };

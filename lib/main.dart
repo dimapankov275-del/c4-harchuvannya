@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_api.dart';
 import 'update_service.dart';
+import 'report_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -334,7 +335,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.6.0';
+  String appVersion = '0.8.0';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -378,7 +379,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.6.0';
+      appVersion = '0.8.0';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
@@ -2514,7 +2515,7 @@ class _PersonnelScreenState extends State<PersonnelScreen> {
                 leading: CircleAvatar(child: Text(person.group.substring(person.group.length - 2))),
                 title: Text(person.name, style: const TextStyle(fontWeight: FontWeight.w700)),
                 subtitle: Text('${person.rank} · ${person.group}'),
-                trailing: widget.controller.canEdit && !widget.controller.realBackend ? IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _editPerson(person)) : (widget.controller.realBackend ? const Tooltip(message: 'Редагування ПІБ/звання буде у v0.4', child: Icon(Icons.lock_outline, size: 19)) : null),
+                trailing: widget.controller.canEdit && !widget.controller.realBackend ? IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _editPerson(person)) : (widget.controller.realBackend ? const Tooltip(message: 'Редагування ПІБ/звання виконується у Google Sheets', child: Icon(Icons.lock_outline, size: 19)) : null),
               );
             },
           ),
@@ -3074,73 +3075,709 @@ class CalculationSummary extends StatelessWidget {
   }
 }
 
-class DocumentsScreen extends StatelessWidget {
+class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, required this.controller});
   final AppController controller;
 
   @override
-  Widget build(BuildContext context) {
-    return PageFrame(
-      title: 'Документи',
-      subtitle: 'Рапорти Word та місячний Excel',
-      child: LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
-        final wide = c.maxWidth > 720;
-        final cards = <Widget>[
-          DocumentCard(
-            icon: Icons.description_outlined,
-            title: 'Рапорт на компенсацію',
-            subtitle: controller.isAdmin ? 'Генерація + налаштування шапки' : 'Генерація для дозволеної групи',
-            badge: 'DOCX',
-            onGenerate: () => _demo(context, 'Рапорт сформовано у демо-режимі.'),
-          ),
-          DocumentCard(
-            icon: Icons.table_chart_outlined,
-            title: 'Місячний Excel',
-            subtitle: 'У місячний Excel переноситься тільки К',
-            badge: 'XLSX',
-            onGenerate: () => _demo(context, 'Місячний Excel сформовано у демо-режимі.'),
-          ),
-        ];
-        if (wide) return Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[Expanded(child: cards[0]), const SizedBox(width: 14), Expanded(child: cards[1])]);
-        return Column(children: <Widget>[cards[0], const SizedBox(height: 14), cards[1]]);
-      }),
-    );
-  }
-
-  void _demo(BuildContext context, String text) => showAppNotice(context, text);
+  State<DocumentsScreen> createState() => _DocumentsScreenState();
 }
 
-class DocumentCard extends StatelessWidget {
-  const DocumentCard({super.key, required this.icon, required this.title, required this.subtitle, required this.badge, required this.onGenerate});
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String badge;
-  final VoidCallback onGenerate;
+class _DocumentsScreenState extends State<DocumentsScreen> {
+  DateTime startDay = DateTime(DateTime.now().year, DateTime.now().month, 1);
+  DateTime endDay = DateTime.now();
+  String group = 'Всі';
+  bool separateByGroup = true;
+  bool selectionTouched = false;
+  final Set<String> selectedIds = <String>{};
+  ReportService? reportService;
+  List<GeneratedReport> generated = <GeneratedReport>[];
+  bool loading = true;
+  bool generating = false;
+  String error = '';
 
   @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-          Row(children: <Widget>[Icon(icon, size: 34), const Spacer(), Chip(label: Text(badge))]),
-          const SizedBox(height: 18),
-          Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 5),
-          Text(subtitle),
-          const SizedBox(height: 18),
-          FilledButton.icon(onPressed: onGenerate, icon: const Icon(Icons.auto_awesome), label: const Text('Сформувати')),
-          const SizedBox(height: 8),
-          Wrap(spacing: 8, runSpacing: 8, children: <Widget>[
-            OutlinedButton.icon(onPressed: onGenerate, icon: const Icon(Icons.open_in_new), label: const Text('Відкрити')),
-            OutlinedButton.icon(onPressed: onGenerate, icon: const Icon(Icons.download_outlined), label: const Text('Завантажити')),
-            OutlinedButton.icon(onPressed: onGenerate, icon: const Icon(Icons.send_outlined), label: const Text('Telegram')),
+  void initState() {
+    super.initState();
+    _loadReportService();
+  }
+
+  Future<void> _loadReportService() async {
+    try {
+      final service = await ReportService.load();
+      if (!mounted) return;
+      setState(() {
+        reportService = service;
+        loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        error = e.toString();
+        loading = false;
+      });
+    }
+  }
+
+  List<String> get _allowedGroups {
+    final user = widget.controller.currentUser;
+    if (user?.role == UserRole.editor) return user!.groups;
+    return AppController.groups;
+  }
+
+  List<_ReportCandidate> _eligibleCandidates() {
+    final service = reportService;
+    if (service == null) return <_ReportCandidate>[];
+    final result = <_ReportCandidate>[];
+    for (final person in widget.controller.visiblePeople) {
+      if (group != 'Всі' && person.group != group) continue;
+      final days = _compensationDays(person);
+      if (days.isEmpty) continue;
+      final profile = service.profileFor(person.name);
+      if (profile == null) continue;
+      result.add(_ReportCandidate(
+        person: person,
+        report: CompensationReportPerson(
+          personId: person.id,
+          group: person.group,
+          profile: profile,
+          days: days,
+        ),
+      ));
+    }
+    result.sort((a, b) {
+      final groupCompare = a.person.group.compareTo(b.person.group);
+      if (groupCompare != 0) return groupCompare;
+      return a.report.profile.fullName.compareTo(b.report.profile.fullName);
+    });
+    return result;
+  }
+
+  List<Person> _missingProfiles() {
+    final service = reportService;
+    if (service == null) return <Person>[];
+    final result = <Person>[];
+    for (final person in widget.controller.visiblePeople) {
+      if (group != 'Всі' && person.group != group) continue;
+      if (_compensationDays(person).isEmpty) continue;
+      if (service.profileFor(person.name) == null) result.add(person);
+    }
+    return result;
+  }
+
+  List<MealCompensationDay> _compensationDays(Person person) {
+    final days = <MealCompensationDay>[];
+    var cursor = DateTime(startDay.year, startDay.month, startDay.day);
+    final last = DateTime(endDay.year, endDay.month, endDay.day);
+    while (!cursor.isAfter(last)) {
+      final item = MealCompensationDay(
+        day: cursor,
+        breakfast: person.mark(cursor, Meal.breakfast) == Mark.k,
+        lunch: person.mark(cursor, Meal.lunch) == Mark.k,
+        dinner: person.mark(cursor, Meal.dinner) == Mark.k,
+      );
+      if (item.any) days.add(item);
+      cursor = cursor.add(const Duration(days: 1));
+    }
+    return days;
+  }
+
+  List<_ReportCandidate> _selectedCandidates() {
+    final eligible = _eligibleCandidates();
+    if (!selectionTouched) return eligible;
+    return eligible.where((item) => selectedIds.contains(item.person.id)).toList();
+  }
+
+  void _resetSelection() {
+    selectionTouched = false;
+    selectedIds.clear();
+    generated = <GeneratedReport>[];
+  }
+
+  Future<void> _pickStart() async {
+    final value = await showDatePicker(
+      context: context,
+      initialDate: startDay,
+      firstDate: DateTime(2025),
+      lastDate: DateTime(2035),
+    );
+    if (value == null) return;
+    setState(() {
+      startDay = value;
+      if (endDay.isBefore(startDay)) endDay = startDay;
+      _resetSelection();
+    });
+  }
+
+  Future<void> _pickEnd() async {
+    final value = await showDatePicker(
+      context: context,
+      initialDate: endDay.isBefore(startDay) ? startDay : endDay,
+      firstDate: startDay,
+      lastDate: DateTime(2035),
+    );
+    if (value == null) return;
+    setState(() {
+      endDay = value;
+      _resetSelection();
+    });
+  }
+
+  Future<void> _choosePeople() async {
+    final all = _eligibleCandidates();
+    final chosen = <String>{
+      if (selectionTouched) ...selectedIds else ...all.map((e) => e.person.id),
+    };
+    var search = '';
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => StatefulBuilder(
+        builder: (BuildContext context, void Function(void Function()) setLocal) {
+          final filtered = all.where((item) {
+            final q = search.toLowerCase();
+            return q.isEmpty ||
+                item.report.profile.fullName.toLowerCase().contains(q) ||
+                item.person.group.toLowerCase().contains(q);
+          }).toList();
+          return AlertDialog(
+            title: const Text('Особи для рапорту'),
+            content: SizedBox(
+              width: 650,
+              height: 560,
+              child: Column(children: <Widget>[
+                TextField(
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: 'ПІБ або група...',
+                  ),
+                  onChanged: (value) => setLocal(() => search = value),
+                ),
+                const SizedBox(height: 8),
+                Row(children: <Widget>[
+                  TextButton(
+                    onPressed: () => setLocal(() {
+                      chosen
+                        ..clear()
+                        ..addAll(all.map((e) => e.person.id));
+                    }),
+                    child: const Text('Вибрати всіх'),
+                  ),
+                  TextButton(
+                    onPressed: () => setLocal(chosen.clear),
+                    child: const Text('Очистити'),
+                  ),
+                  const Spacer(),
+                  Text('${chosen.length} / ${all.length}'),
+                ]),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: filtered.length,
+                    itemBuilder: (context, index) {
+                      final item = filtered[index];
+                      return CheckboxListTile(
+                        value: chosen.contains(item.person.id),
+                        onChanged: (value) => setLocal(() {
+                          if (value == true) {
+                            chosen.add(item.person.id);
+                          } else {
+                            chosen.remove(item.person.id);
+                          }
+                        }),
+                        title: Text(item.report.profile.fullName),
+                        subtitle: Text(
+                          '${item.person.group} · ${item.report.mealCount} прийомів · ${item.report.compensationText}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ]),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Скасувати'),
+              ),
+              FilledButton(
+                onPressed: chosen.isEmpty
+                    ? null
+                    : () => Navigator.pop(dialogContext, true),
+                child: const Text('Застосувати'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (accepted == true) {
+      setState(() {
+        selectionTouched = true;
+        selectedIds
+          ..clear()
+          ..addAll(chosen);
+        generated = <GeneratedReport>[];
+      });
+    }
+  }
+
+  Future<void> _showPreview() async {
+    final selected = _selectedCandidates();
+    final missing = _missingProfiles();
+    if (selected.isEmpty) {
+      showAppNotice(context, 'За вибраний період немає осіб із К для формування рапорту.');
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: Text('Попередній перегляд · ${selected.length} осіб'),
+        content: SizedBox(
+          width: 760,
+          height: 580,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+            Text('${longDate(startDay)} — ${longDate(endDay)}'),
+            if (missing.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                'У довіднику не знайдено ${missing.length} осіб: ${missing.map((e) => e.name).join(', ')}',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+            const SizedBox(height: 10),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView.separated(
+                itemCount: selected.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final item = selected[index].report;
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                    leading: CircleAvatar(child: Text(item.group.replaceAll('С-', ''))),
+                    title: Text(item.profile.fullName, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text('К: ${item.mealCount} прийомів\n${item.compensationText}'),
+                    isThreeLine: true,
+                  );
+                },
+              ),
+            ),
           ]),
-        ]),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Закрити'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _generate();
+            },
+            icon: const Icon(Icons.description_outlined),
+            label: const Text('Сформувати DOCX'),
+          ),
+        ],
       ),
     );
   }
+
+  Future<void> _generate() async {
+    final service = reportService;
+    if (service == null || generating) return;
+    final selected = _selectedCandidates().map((e) => e.report).toList();
+    if (selected.isEmpty) {
+      showAppNotice(context, 'Немає вибраних осіб із К.');
+      return;
+    }
+    setState(() {
+      generating = true;
+      error = '';
+    });
+    try {
+      final files = await service.generateReports(
+        persons: selected,
+        start: startDay,
+        end: endDay,
+        separateByGroup: group == 'Всі' && separateByGroup,
+      );
+      if (!mounted) return;
+      setState(() => generated = files);
+      showAppNotice(context, 'Сформовано DOCX: ${files.length}. Осіб: ${selected.length}.');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => error = e.toString());
+      showAppNotice(context, 'Не вдалося сформувати DOCX: $e');
+    } finally {
+      if (mounted) setState(() => generating = false);
+    }
+  }
+
+  Future<void> _share(List<GeneratedReport> files) async {
+    final service = reportService;
+    if (service == null || files.isEmpty) return;
+    try {
+      final result = await service.shareReports(files);
+      if (!mounted) return;
+      showAppNotice(
+        context,
+        result.status == ShareResultStatus.dismissed
+            ? 'Надсилання скасовано.'
+            : 'Відкрито меню надсилання. Обери Telegram.',
+      );
+      setState(() {});
+    } catch (e) {
+      if (mounted) showAppNotice(context, 'Не вдалося відкрити надсилання: $e');
+    }
+  }
+
+  Future<void> _save(GeneratedReport report) async {
+    final service = reportService;
+    if (service == null) return;
+    try {
+      final path = await service.copyToDownloads(report);
+      if (!mounted) return;
+      showAppNotice(context, 'Збережено: $path');
+      setState(() {});
+    } catch (e) {
+      if (mounted) showAppNotice(context, 'Не вдалося зберегти: $e');
+    }
+  }
+
+  Future<void> _open(GeneratedReport report) async {
+    final service = reportService;
+    if (service == null) return;
+    try {
+      await service.openReport(report);
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (mounted) showAppNotice(context, 'Не вдалося відкрити файл: $e');
+    }
+  }
+
+  Future<void> _editSettings() async {
+    final service = reportService;
+    if (service == null || !widget.controller.isAdmin) return;
+    final current = service.settings;
+    final controllers = <String, TextEditingController>{
+      'r1Line1': TextEditingController(text: current.r1Line1),
+      'r1Line2': TextEditingController(text: current.r1Line2),
+      'r2Line1': TextEditingController(text: current.r2Line1),
+      'r2Line2': TextEditingController(text: current.r2Line2),
+      'ccPosition': TextEditingController(text: current.ccPosition),
+      'ccInstitution': TextEditingController(text: current.ccInstitution),
+      'ccRank': TextEditingController(text: current.ccRank),
+      'ccName': TextEditingController(text: current.ccName),
+      'r3Line1': TextEditingController(text: current.r3Line1),
+      'r3Line2': TextEditingController(text: current.r3Line2),
+      'r3Petition': TextEditingController(text: current.r3Petition),
+      'r3Position1': TextEditingController(text: current.r3Position1),
+      'r3Position2': TextEditingController(text: current.r3Position2),
+      'r3Rank': TextEditingController(text: current.r3Rank),
+      'r3Name': TextEditingController(text: current.r3Name),
+      'doctorPosition1': TextEditingController(text: current.doctorPosition1),
+      'doctorPosition2': TextEditingController(text: current.doctorPosition2),
+      'doctorRank': TextEditingController(text: current.doctorRank),
+      'doctorName': TextEditingController(text: current.doctorName),
+    };
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Шапка, підписанти та погодження'),
+        content: SizedBox(
+          width: 720,
+          height: 650,
+          child: SingleChildScrollView(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+              _settingsSection('Перший рапорт'),
+              _settingsField(controllers['r1Line1']!, 'Адресат · рядок 1'),
+              _settingsField(controllers['r1Line2']!, 'Адресат · рядок 2'),
+              _settingsSection('Клопотання начальника курсу'),
+              _settingsField(controllers['r2Line1']!, 'Адресат · рядок 1'),
+              _settingsField(controllers['r2Line2']!, 'Адресат · рядок 2'),
+              _settingsField(controllers['ccPosition']!, 'Посада'),
+              _settingsField(controllers['ccInstitution']!, 'Установа'),
+              _settingsField(controllers['ccRank']!, 'Звання'),
+              _settingsField(controllers['ccName']!, 'ПІБ'),
+              _settingsSection('Третій рапорт'),
+              _settingsField(controllers['r3Line1']!, 'Адресат · рядок 1'),
+              _settingsField(controllers['r3Line2']!, 'Адресат · рядок 2'),
+              _settingsField(controllers['r3Petition']!, 'Текст клопотання'),
+              _settingsField(controllers['r3Position1']!, 'Посада · рядок 1'),
+              _settingsField(controllers['r3Position2']!, 'Посада · рядок 2'),
+              _settingsField(controllers['r3Rank']!, 'Звання'),
+              _settingsField(controllers['r3Name']!, 'ПІБ'),
+              _settingsSection('Погоджено'),
+              _settingsField(controllers['doctorPosition1']!, 'Посада · рядок 1'),
+              _settingsField(controllers['doctorPosition2']!, 'Посада · рядок 2'),
+              _settingsField(controllers['doctorRank']!, 'Звання'),
+              _settingsField(controllers['doctorName']!, 'ПІБ'),
+            ]),
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () {
+              const d = ReportSettings.defaults;
+              controllers['r1Line1']!.text = d.r1Line1;
+              controllers['r1Line2']!.text = d.r1Line2;
+              controllers['r2Line1']!.text = d.r2Line1;
+              controllers['r2Line2']!.text = d.r2Line2;
+              controllers['ccPosition']!.text = d.ccPosition;
+              controllers['ccInstitution']!.text = d.ccInstitution;
+              controllers['ccRank']!.text = d.ccRank;
+              controllers['ccName']!.text = d.ccName;
+              controllers['r3Line1']!.text = d.r3Line1;
+              controllers['r3Line2']!.text = d.r3Line2;
+              controllers['r3Petition']!.text = d.r3Petition;
+              controllers['r3Position1']!.text = d.r3Position1;
+              controllers['r3Position2']!.text = d.r3Position2;
+              controllers['r3Rank']!.text = d.r3Rank;
+              controllers['r3Name']!.text = d.r3Name;
+              controllers['doctorPosition1']!.text = d.doctorPosition1;
+              controllers['doctorPosition2']!.text = d.doctorPosition2;
+              controllers['doctorRank']!.text = d.doctorRank;
+              controllers['doctorName']!.text = d.doctorName;
+            },
+            child: const Text('Стандартні'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Зберегти')),
+        ],
+      ),
+    );
+    if (saved == true) {
+      await service.saveSettings(ReportSettings(
+        r1Line1: controllers['r1Line1']!.text.trim(),
+        r1Line2: controllers['r1Line2']!.text.trim(),
+        r2Line1: controllers['r2Line1']!.text.trim(),
+        r2Line2: controllers['r2Line2']!.text.trim(),
+        r2Line3: current.r2Line3,
+        r2Line4: current.r2Line4,
+        ccPosition: controllers['ccPosition']!.text.trim(),
+        ccInstitution: controllers['ccInstitution']!.text.trim(),
+        ccRank: controllers['ccRank']!.text.trim(),
+        ccName: controllers['ccName']!.text.trim(),
+        r3Line1: controllers['r3Line1']!.text.trim(),
+        r3Line2: controllers['r3Line2']!.text.trim(),
+        r3Petition: controllers['r3Petition']!.text.trim(),
+        r3Position1: controllers['r3Position1']!.text.trim(),
+        r3Position2: controllers['r3Position2']!.text.trim(),
+        r3Position3: current.r3Position3,
+        r3Rank: controllers['r3Rank']!.text.trim(),
+        r3Name: controllers['r3Name']!.text.trim(),
+        doctorPosition1: controllers['doctorPosition1']!.text.trim(),
+        doctorPosition2: controllers['doctorPosition2']!.text.trim(),
+        doctorRank: controllers['doctorRank']!.text.trim(),
+        doctorName: controllers['doctorName']!.text.trim(),
+      ));
+      if (mounted) showAppNotice(context, 'Налаштування рапорту збережено.');
+    }
+    for (final controller in controllers.values) {
+      controller.dispose();
+    }
+  }
+
+  Widget _settingsSection(String title) => Padding(
+        padding: const EdgeInsets.only(top: 14, bottom: 7),
+        child: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+      );
+
+  Widget _settingsField(TextEditingController controller, String label) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: TextField(controller: controller, decoration: InputDecoration(labelText: label)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const PageFrame(
+        title: 'Документи',
+        subtitle: 'Рапорти DOCX та надсилання',
+        child: Center(child: Padding(padding: EdgeInsets.all(48), child: CircularProgressIndicator())),
+      );
+    }
+
+    final eligible = _eligibleCandidates();
+    final selected = _selectedCandidates();
+    final missing = _missingProfiles();
+    final service = reportService;
+
+    return PageFrame(
+      title: 'Документи',
+      subtitle: 'Компенсація · Word MASTER · попередній перегляд · Telegram',
+      actions: <Widget>[
+        if (widget.controller.isAdmin)
+          OutlinedButton.icon(
+            onPressed: _editSettings,
+            icon: const Icon(Icons.tune_rounded),
+            label: const Text('Шапка і підписи'),
+          ),
+      ],
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+              Row(children: <Widget>[
+                const Icon(Icons.description_outlined, size: 34),
+                const SizedBox(width: 12),
+                const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+                  Text('Рапорт на компенсацію', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                  Text('К береться з табеля. Грошова сума не розраховується.', style: TextStyle(fontSize: 11, color: Color(0xFF91A8BC))),
+                ])),
+                const Chip(label: Text('DOCX')),
+              ]),
+              const SizedBox(height: 16),
+              Wrap(spacing: 10, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: <Widget>[
+                OutlinedButton.icon(onPressed: _pickStart, icon: const Icon(Icons.calendar_today_outlined), label: Text('З ${shortDate(startDay)}')),
+                OutlinedButton.icon(onPressed: _pickEnd, icon: const Icon(Icons.event_available_outlined), label: Text('По ${shortDate(endDay)}')),
+                SizedBox(
+                  width: 180,
+                  child: DropdownButtonFormField<String>(
+                    initialValue: group,
+                    decoration: const InputDecoration(labelText: 'Група'),
+                    items: <String>['Всі', ..._allowedGroups]
+                        .map((g) => DropdownMenuItem(value: g, child: Text(g)))
+                        .toList(),
+                    onChanged: (value) => setState(() {
+                      group = value ?? 'Всі';
+                      _resetSelection();
+                    }),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: eligible.isEmpty ? null : _choosePeople,
+                  icon: const Icon(Icons.people_alt_outlined),
+                  label: Text('Особи · ${selected.length}/${eligible.length}'),
+                ),
+              ]),
+              if (group == 'Всі') ...<Widget>[
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: separateByGroup,
+                  onChanged: (value) => setState(() {
+                    separateByGroup = value;
+                    generated = <GeneratedReport>[];
+                  }),
+                  title: const Text('Окремий DOCX для кожної групи'),
+                  subtitle: const Text('С-41…С-45 формуються окремими файлами; одна людина = одна сторінка.'),
+                ),
+              ],
+              if (missing.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(
+                  'Не знайдено у довіднику: ${missing.map((e) => e.name).join(', ')}',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+                ),
+              ],
+              if (error.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              ],
+              const SizedBox(height: 14),
+              Wrap(spacing: 9, runSpacing: 9, children: <Widget>[
+                OutlinedButton.icon(
+                  onPressed: selected.isEmpty || generating ? null : _showPreview,
+                  icon: const Icon(Icons.preview_outlined),
+                  label: const Text('Попередній перегляд'),
+                ),
+                FilledButton.icon(
+                  onPressed: selected.isEmpty || generating ? null : _generate,
+                  icon: generating
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.auto_awesome),
+                  label: Text(generating ? 'Формування...' : 'Сформувати DOCX'),
+                ),
+              ]),
+            ]),
+          ),
+        ),
+        if (generated.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 14),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+                Row(children: <Widget>[
+                  const Expanded(child: Text('Готові документи', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16))),
+                  if (generated.length > 1)
+                    FilledButton.icon(
+                      onPressed: () => _share(generated),
+                      icon: const Icon(Icons.send_outlined),
+                      label: const Text('Telegram / усі'),
+                    ),
+                ]),
+                const SizedBox(height: 8),
+                for (final report in generated)
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor))),
+                    child: Row(children: <Widget>[
+                      const Icon(Icons.description_rounded),
+                      const SizedBox(width: 10),
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+                        Text(report.fileName, style: const TextStyle(fontWeight: FontWeight.w700)),
+                        Text('${report.personCount} осіб · ${report.group}', style: const TextStyle(fontSize: 11, color: Color(0xFF91A8BC))),
+                      ])),
+                      IconButton(tooltip: 'Відкрити', onPressed: () => _open(report), icon: const Icon(Icons.open_in_new)),
+                      IconButton(tooltip: 'Зберегти в Downloads', onPressed: () => _save(report), icon: const Icon(Icons.download_outlined)),
+                      IconButton(tooltip: 'Telegram / Поділитися', onPressed: () => _share(<GeneratedReport>[report]), icon: const Icon(Icons.send_outlined)),
+                    ]),
+                  ),
+              ]),
+            ),
+          ),
+        ],
+        const SizedBox(height: 14),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+              const Row(children: <Widget>[
+                Icon(Icons.history_rounded),
+                SizedBox(width: 8),
+                Text('Останні дії з документами', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+              ]),
+              const SizedBox(height: 8),
+              if (service == null || service.history.isEmpty)
+                const Text('Історія ще порожня.', style: TextStyle(color: Color(0xFF91A8BC)))
+              else
+                for (final item in service.history.take(8))
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    leading: Icon(item.action == 'GENERATED' ? Icons.description_outlined : item.action == 'SHARE' ? Icons.send_outlined : Icons.folder_open_outlined),
+                    title: Text(item.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text('${item.action} · ${item.detail}'),
+                    trailing: Text('${item.time.day.toString().padLeft(2, '0')}.${item.time.month.toString().padLeft(2, '0')} ${item.time.hour.toString().padLeft(2, '0')}:${item.time.minute.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 10)),
+                  ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.table_chart_outlined),
+            title: const Text('Місячний Excel'),
+            subtitle: const Text('Поточна логіка не змінювалась. Розширення XLSX — у наступному етапі.'),
+            trailing: const Chip(label: Text('XLSX')),
+            onTap: () => showAppNotice(context, 'Місячний Excel у цьому релізі залишено без змін.'),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+class _ReportCandidate {
+  const _ReportCandidate({required this.person, required this.report});
+  final Person person;
+  final CompensationReportPerson report;
 }
 
 
@@ -3741,33 +4378,36 @@ class TelegramScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final code = 100000 + Random().nextInt(899999);
     return Scaffold(
-      appBar: AppBar(title: const Text('Мій Telegram')),
+      appBar: AppBar(title: const Text('Telegram / Надсилання')),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 600),
+            constraints: const BoxConstraints(maxWidth: 620),
             child: Card(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(children: <Widget>[
-                  Icon(controller.telegramLinked ? Icons.check_circle : Icons.send_outlined, size: 64, color: controller.telegramLinked ? Colors.green : Colors.blue),
+                  const Icon(Icons.send_rounded, size: 64, color: Colors.blue),
                   const SizedBox(height: 14),
-                  Text(controller.telegramLinked ? 'Telegram підключено' : 'Telegram не підключено', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 8),
-                  if (controller.telegramLinked) ...<Widget>[
-                    Text(controller.telegramName, style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 18),
-                    OutlinedButton.icon(onPressed: controller.unlinkTelegram, icon: const Icon(Icons.link_off), label: const Text('Відв’язати')),
-                  ] else ...<Widget>[
-                    const Text('У production цей одноразовий код надсилається боту. У демо-режимі кнопка нижче імітує успішну прив’язку.'),
-                    const SizedBox(height: 16),
-                    SelectableText('$code', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, letterSpacing: 4)),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(onPressed: controller.linkTelegramDemo, icon: const Icon(Icons.link), label: const Text('Імітувати прив’язку')),
-                  ],
+                  Text(
+                    'Надсилання документів',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'У v0.8 DOCX надсилається через системне меню «Поділитися». '
+                    'У розділі «Документи» натисни «Telegram / Поділитися» та вибери Telegram. '
+                    'Токен бота і chat_id у застосунку для цього не потрібні.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 18),
+                  FilledButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.description_outlined),
+                    label: const Text('Повернутися'),
+                  ),
                 ]),
               ),
             ),
@@ -3813,7 +4453,7 @@ class SettingsScreen extends StatelessWidget {
             onTap: controller.syncing ? null : controller.syncNow,
           ),
           const Divider(height: 1),
-          ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Мій Telegram'), subtitle: Text(controller.realBackend ? 'Персональне підключення буде у v0.6' : (controller.telegramLinked ? controller.telegramName : 'Не підключено')), onTap: controller.realBackend ? null : () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
+          ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Telegram / Надсилання'), subtitle: const Text('DOCX через системне меню «Поділитися»'), onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
           const Divider(height: 1),
           ListTile(leading: const Icon(Icons.password_outlined), title: const Text('Змінити пароль'), onTap: () => _changePassword(context)),
           const Divider(height: 1),
