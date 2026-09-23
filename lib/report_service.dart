@@ -278,7 +278,7 @@ class ReportService {
   static const _settingsKey = 'report_settings_v08';
   static const _historyKey = 'report_history_v08';
   static const _templateAsset =
-      'assets/templates/Шаблон_Рапорт_Компенсація_MASTER_FORMAT_SAFE.docx';
+      'assets/templates/report_template.docx';
   static const _profilesAsset = 'assets/data/report_people.json';
 
   final SharedPreferences _prefs;
