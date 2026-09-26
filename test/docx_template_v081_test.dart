@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('v0.8.1 MASTER template has no duplicate-prone drawing objects', () async {
+  test('v0.8.3 MASTER uses safe real TextBox with unique-ID placeholders', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);
@@ -16,14 +16,24 @@ void main() {
     expect(xmlFile, isNotNull);
     final xml = utf8.decode(xmlFile!.content as List<int>);
 
-    expect(xml.contains('<mc:AlternateContent'), isFalse);
-    expect(xml.contains('<wp:docPr'), isFalse);
+    expect(xml.contains('<mc:AlternateContent'), isTrue);
+    expect(xml.contains('<wps:txbx>'), isTrue);
+    expect(xml.contains('<v:textbox'), isTrue);
+    expect(xml.contains('<wp:docPr'), isTrue);
     expect(xml.contains('<v:shape'), isFalse);
-    expect(xml.contains('{{H1}}'), isFalse);
-    expect(xml.contains('{{H2}}'), isFalse);
+    expect(xml.contains('<w14:textOutline'), isFalse);
+    expect(xml.contains('{{TB_DOCPR}}'), isTrue);
+    expect(xml.contains('{{TB_ID}}'), isTrue);
+    expect(xml.contains('{{TB_SPID}}'), isTrue);
+    expect(xml.contains('{{H1}}'), isTrue);
+    expect(xml.contains('{{H2}}'), isTrue);
+    expect(xml.contains('{{H3}}'), isTrue);
+    expect(xml.contains('{{H_RANK}}'), isTrue);
+    expect(xml.contains('{{H_PERSON}}'), isTrue);
+    expect(xml.contains('{{H_DATE}}'), isTrue);
   });
 
-  test('v0.8.1 MASTER template has no empty tail paragraphs', () async {
+  test('v0.8.3 MASTER template has no empty tail paragraphs', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);
@@ -62,7 +72,7 @@ void main() {
     expect(lastText, isNotEmpty);
   });
 
-  test('v0.8.1 MASTER supports three-line addressees', () async {
+  test('v0.8.3 MASTER supports three-line addressees', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);
@@ -73,4 +83,20 @@ void main() {
     expect(xml.contains('{{R2_3}}'), isTrue);
     expect(xml.contains('{{R3_3}}'), isTrue);
   });
+
+  test('v0.8.3 MASTER keeps header and first-report addressee side by side', () async {
+    final data = await rootBundle.load('assets/templates/report_template.docx');
+    final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final xml = utf8.decode(
+      archive.findFile('word/document.xml')!.content as List<int>,
+    );
+
+    expect(xml.contains('<w:tbl'), isTrue);
+    expect(xml.contains('{{H1}}'), isTrue);
+    expect(xml.contains('{{H_RANK}}'), isTrue);
+    expect(xml.contains('{{R1_1}}'), isTrue);
+    expect(xml.contains('{{R1_2}}'), isTrue);
+  });
+
 }

@@ -2,7 +2,7 @@ import 'package:c4_harchuvannya/report_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('v0.8.1 compensation report text', () {
+  group('v0.8.3 compensation report text', () {
     test('lists only marked meals by date', () {
       final text = ReportService.formatCompensation(<MealCompensationDay>[
         MealCompensationDay(day: DateTime(2026, 9, 23), breakfast: true, lunch: false, dinner: true),
