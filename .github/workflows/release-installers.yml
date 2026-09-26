@@ -28,11 +28,11 @@ jobs:
       - run: flutter test
       - run: flutter build apk --release
       - name: Rename APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk C4_Harchuvannya_v0.8.3_Android.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk C4_Harchuvannya_v0.8.4_Android.apk
       - uses: actions/upload-artifact@v4
         with:
           name: C4-Harchuvannya-Android-APK
-          path: C4_Harchuvannya_v0.8.3_Android.apk
+          path: C4_Harchuvannya_v0.8.4_Android.apk
 
   windows:
     name: Windows Setup EXE
@@ -59,7 +59,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: C4-Harchuvannya-Windows-Setup
-          path: installer/windows/output/C4_Harchuvannya_v0.8.3_Setup.exe
+          path: installer/windows/output/C4_Harchuvannya_v0.8.4_Setup.exe
 
   macos:
     name: macOS DMG
@@ -81,11 +81,11 @@ jobs:
           mkdir dmgroot
           cp -R build/macos/Build/Products/Release/c4_harchuvannya.app dmgroot/'С4 Харчування.app'
           ln -s /Applications dmgroot/Applications
-          hdiutil create -volname 'С4 Харчування' -srcfolder dmgroot -ov -format UDZO C4_Harchuvannya_v0.8.3_macOS.dmg
+          hdiutil create -volname 'С4 Харчування' -srcfolder dmgroot -ov -format UDZO C4_Harchuvannya_v0.8.4_macOS.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: C4-Harchuvannya-macOS-DMG
-          path: C4_Harchuvannya_v0.8.3_macOS.dmg
+          path: C4_Harchuvannya_v0.8.4_macOS.dmg
 
   release:
     name: Publish GitHub Release
@@ -110,15 +110,15 @@ jobs:
         run: |
           cp update-policy.json release/update-policy.json
           cd release
-          sha256sum C4_Harchuvannya_v0.8.3_Android.apk C4_Harchuvannya_v0.8.3_Setup.exe C4_Harchuvannya_v0.8.3_macOS.dmg update-policy.json > SHA256SUMS.txt
+          sha256sum C4_Harchuvannya_v0.8.4_Android.apk C4_Harchuvannya_v0.8.4_Setup.exe C4_Harchuvannya_v0.8.4_macOS.dmg update-policy.json > SHA256SUMS.txt
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           name: С4 Харчування ${{ github.ref_name }}
-          body_path: CHANGELOG_v0.8.3.md
+          body_path: CHANGELOG_v0.8.4.md
           files: |
-            release/C4_Harchuvannya_v0.8.3_Android.apk
-            release/C4_Harchuvannya_v0.8.3_Setup.exe
-            release/C4_Harchuvannya_v0.8.3_macOS.dmg
+            release/C4_Harchuvannya_v0.8.4_Android.apk
+            release/C4_Harchuvannya_v0.8.4_Setup.exe
+            release/C4_Harchuvannya_v0.8.4_macOS.dmg
             release/update-policy.json
             release/SHA256SUMS.txt

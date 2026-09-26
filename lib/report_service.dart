@@ -226,6 +226,125 @@ class ReportSettings {
   }
 }
 
+class ReportLayoutSettings {
+  const ReportLayoutSettings({
+    required this.pageTopMm,
+    required this.pageRightMm,
+    required this.pageBottomMm,
+    required this.pageLeftMm,
+    required this.headerColumnWidthMm,
+    required this.headerWidthMm,
+    required this.headerHeightMm,
+    required this.headerPaddingMm,
+    required this.headerOffsetXmm,
+    required this.headerOffsetYmm,
+    required this.headerFontPt,
+    required this.bodyFontPt,
+    required this.firstLineIndentMm,
+    required this.lineSpacing,
+    required this.gapBeforeFirstReportMm,
+    required this.gapBeforePetitionMm,
+    required this.gapBeforeThirdReportMm,
+    required this.gapBeforeApprovalMm,
+    required this.gapBeforeOrderMm,
+  });
+
+  final double pageTopMm;
+  final double pageRightMm;
+  final double pageBottomMm;
+  final double pageLeftMm;
+  final double headerColumnWidthMm;
+  final double headerWidthMm;
+  final double headerHeightMm;
+  final double headerPaddingMm;
+  final double headerOffsetXmm;
+  final double headerOffsetYmm;
+  final double headerFontPt;
+  final double bodyFontPt;
+  final double firstLineIndentMm;
+  final double lineSpacing;
+  final double gapBeforeFirstReportMm;
+  final double gapBeforePetitionMm;
+  final double gapBeforeThirdReportMm;
+  final double gapBeforeApprovalMm;
+  final double gapBeforeOrderMm;
+
+  static const defaults = ReportLayoutSettings(
+    pageTopMm: 7.5,
+    pageRightMm: 15.0,
+    pageBottomMm: 7.5,
+    pageLeftMm: 30.0,
+    headerColumnWidthMm: 76.2,
+    headerWidthMm: 89.1,
+    headerHeightMm: 29.2,
+    headerPaddingMm: 0.0,
+    headerOffsetXmm: 0.0,
+    headerOffsetYmm: 0.0,
+    headerFontPt: 10.0,
+    bodyFontPt: 12.0,
+    firstLineIndentMm: 12.7,
+    lineSpacing: 1.0,
+    gapBeforeFirstReportMm: 0.0,
+    gapBeforePetitionMm: 2.0,
+    gapBeforeThirdReportMm: 2.0,
+    gapBeforeApprovalMm: 2.0,
+    gapBeforeOrderMm: 1.0,
+  );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'pageTopMm': pageTopMm,
+        'pageRightMm': pageRightMm,
+        'pageBottomMm': pageBottomMm,
+        'pageLeftMm': pageLeftMm,
+        'headerColumnWidthMm': headerColumnWidthMm,
+        'headerWidthMm': headerWidthMm,
+        'headerHeightMm': headerHeightMm,
+        'headerPaddingMm': headerPaddingMm,
+        'headerOffsetXmm': headerOffsetXmm,
+        'headerOffsetYmm': headerOffsetYmm,
+        'headerFontPt': headerFontPt,
+        'bodyFontPt': bodyFontPt,
+        'firstLineIndentMm': firstLineIndentMm,
+        'lineSpacing': lineSpacing,
+        'gapBeforeFirstReportMm': gapBeforeFirstReportMm,
+        'gapBeforePetitionMm': gapBeforePetitionMm,
+        'gapBeforeThirdReportMm': gapBeforeThirdReportMm,
+        'gapBeforeApprovalMm': gapBeforeApprovalMm,
+        'gapBeforeOrderMm': gapBeforeOrderMm,
+      };
+
+  factory ReportLayoutSettings.fromJson(Map<String, dynamic> map) {
+    double n(String key, double fallback) {
+      final raw = map[key];
+      if (raw is num) return raw.toDouble();
+      return double.tryParse(raw?.toString().replaceAll(',', '.') ?? '') ?? fallback;
+    }
+
+    const d = defaults;
+    return ReportLayoutSettings(
+      pageTopMm: n('pageTopMm', d.pageTopMm),
+      pageRightMm: n('pageRightMm', d.pageRightMm),
+      pageBottomMm: n('pageBottomMm', d.pageBottomMm),
+      pageLeftMm: n('pageLeftMm', d.pageLeftMm),
+      headerColumnWidthMm: n('headerColumnWidthMm', d.headerColumnWidthMm),
+      headerWidthMm: n('headerWidthMm', d.headerWidthMm),
+      headerHeightMm: n('headerHeightMm', d.headerHeightMm),
+      headerPaddingMm: n('headerPaddingMm', d.headerPaddingMm),
+      headerOffsetXmm: n('headerOffsetXmm', d.headerOffsetXmm),
+      headerOffsetYmm: n('headerOffsetYmm', d.headerOffsetYmm),
+      headerFontPt: n('headerFontPt', d.headerFontPt),
+      bodyFontPt: n('bodyFontPt', d.bodyFontPt),
+      firstLineIndentMm: n('firstLineIndentMm', d.firstLineIndentMm),
+      lineSpacing: n('lineSpacing', d.lineSpacing),
+      gapBeforeFirstReportMm: n('gapBeforeFirstReportMm', d.gapBeforeFirstReportMm),
+      gapBeforePetitionMm: n('gapBeforePetitionMm', d.gapBeforePetitionMm),
+      gapBeforeThirdReportMm: n('gapBeforeThirdReportMm', d.gapBeforeThirdReportMm),
+      gapBeforeApprovalMm: n('gapBeforeApprovalMm', d.gapBeforeApprovalMm),
+      gapBeforeOrderMm: n('gapBeforeOrderMm', d.gapBeforeOrderMm),
+    );
+  }
+}
+
 class MealCompensationDay {
   const MealCompensationDay({
     required this.day,
@@ -312,10 +431,11 @@ class ReportHistoryEntry {
 }
 
 class ReportService {
-  ReportService._(this._prefs, this.profiles, this.settings, this.history);
+  ReportService._(this._prefs, this.profiles, this.settings, this.layout, this.history);
 
   static const _settingsKey = 'report_settings_v08';
   static const _historyKey = 'report_history_v08';
+  static const _layoutKey = 'report_layout_v084';
   static const _templateAsset =
       'assets/templates/report_template.docx';
   static const _profilesAsset = 'assets/data/report_people.json';
@@ -323,6 +443,7 @@ class ReportService {
   final SharedPreferences _prefs;
   final List<ReportPersonProfile> profiles;
   ReportSettings settings;
+  ReportLayoutSettings layout;
   final List<ReportHistoryEntry> history;
 
   static Future<ReportService> load() async {
@@ -343,6 +464,16 @@ class ReportService {
       } catch (_) {}
     }
 
+    var layout = ReportLayoutSettings.defaults;
+    final rawLayout = prefs.getString(_layoutKey);
+    if (rawLayout != null && rawLayout.isNotEmpty) {
+      try {
+        layout = ReportLayoutSettings.fromJson(
+          Map<String, dynamic>.from(jsonDecode(rawLayout) as Map),
+        );
+      } catch (_) {}
+    }
+
     final history = <ReportHistoryEntry>[];
     final rawHistory = prefs.getString(_historyKey);
     if (rawHistory != null && rawHistory.isNotEmpty) {
@@ -354,12 +485,22 @@ class ReportService {
       } catch (_) {}
     }
 
-    return ReportService._(prefs, profiles, settings, history);
+    return ReportService._(prefs, profiles, settings, layout, history);
   }
 
   Future<void> saveSettings(ReportSettings value) async {
     settings = value;
     await _prefs.setString(_settingsKey, jsonEncode(value.toJson()));
+  }
+
+  Future<void> saveLayoutSettings(ReportLayoutSettings value) async {
+    layout = value;
+    await _prefs.setString(_layoutKey, jsonEncode(value.toJson()));
+  }
+
+  Future<void> resetLayoutSettings() async {
+    layout = ReportLayoutSettings.defaults;
+    await _prefs.remove(_layoutKey);
   }
 
   ReportPersonProfile? profileFor(String name) {
@@ -480,6 +621,39 @@ class ReportService {
     return generated;
   }
 
+  Future<GeneratedReport> generateTestReport() async {
+    if (profiles.isEmpty) {
+      throw StateError('Довідник осіб порожній.');
+    }
+    final day = DateTime.now();
+    final profile = profiles.first;
+    final person = CompensationReportPerson(
+      personId: 'layout-test',
+      group: profile.group.isEmpty ? 'С4' : profile.group,
+      profile: profile,
+      days: <MealCompensationDay>[
+        MealCompensationDay(
+          day: day,
+          breakfast: true,
+          lunch: true,
+          dinner: true,
+        ),
+      ],
+    );
+    final bytes = await _buildDocx(<CompensationReportPerson>[person]);
+    final root = await _reportDirectory();
+    const fileName = 'Тест_оформлення_DOCX.docx';
+    final file = File('${root.path}${Platform.pathSeparator}$fileName');
+    await file.writeAsBytes(bytes, flush: true);
+    await _log('TEST', fileName, 'Перевірка налаштувань документа');
+    return GeneratedReport(
+      group: person.group,
+      fileName: fileName,
+      path: file.path,
+      personCount: 1,
+    );
+  }
+
   Future<Uint8List> _buildDocx(List<CompensationReportPerson> persons) async {
     final data = await rootBundle.load(_templateAsset);
     final templateBytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
@@ -496,8 +670,10 @@ class ReportService {
     // Keep the real TextBox in the MASTER, but sanitize paragraph metadata.
     // Each duplicated page receives its own TextBox IDs in _fillPersonPage,
     // which prevents Microsoft Word from reporting duplicate drawing IDs.
-    final bodyTemplate = _sanitizeTemplateBody(bodyMatch.group(1)!);
-    final section = bodyMatch.group(2)!;
+    final bodyTemplate = _applyDocumentLayout(
+      _sanitizeTemplateBody(bodyMatch.group(1)!),
+    );
+    final section = _applyPageMargins(bodyMatch.group(2)!);
     final pages = <String>[];
     for (var index = 0; index < persons.length; index++) {
       pages.add(_fillPersonPage(bodyTemplate, persons[index], index));
@@ -526,6 +702,308 @@ class ReportService {
     if (encoded == null) throw StateError('Не вдалося зібрати DOCX.');
     return Uint8List.fromList(encoded);
   }
+
+  String _applyPageMargins(String source) {
+    final top = _mmToTwips(_clamp(layout.pageTopMm, 0, 60));
+    final right = _mmToTwips(_clamp(layout.pageRightMm, 0, 60));
+    final bottom = _mmToTwips(_clamp(layout.pageBottomMm, 0, 60));
+    final left = _mmToTwips(_clamp(layout.pageLeftMm, 0, 60));
+    final pgMar = RegExp(r'<w:pgMar\b[^>]*/>');
+    final match = pgMar.firstMatch(source);
+    if (match == null) return source;
+    var tag = match.group(0)!;
+    tag = _setXmlAttribute(tag, 'w:top', top.toString());
+    tag = _setXmlAttribute(tag, 'w:right', right.toString());
+    tag = _setXmlAttribute(tag, 'w:bottom', bottom.toString());
+    tag = _setXmlAttribute(tag, 'w:left', left.toString());
+    return source.replaceRange(match.start, match.end, tag);
+  }
+
+  String _applyDocumentLayout(String source) {
+    var xml = source;
+    xml = _applyHeaderLayout(xml);
+    xml = _applyMainParagraphLayout(xml);
+    xml = _setFirstExactParagraphBefore(xml, 'РАПОРТ', layout.gapBeforeFirstReportMm);
+    xml = _setParagraphBeforeContaining(xml, '{{R2_1}}', layout.gapBeforePetitionMm);
+    xml = _setParagraphBeforeContaining(xml, '{{R3_1}}', layout.gapBeforeThirdReportMm);
+    xml = _setParagraphBeforeContaining(xml, 'ПОГОДЖЕНО', layout.gapBeforeApprovalMm);
+    xml = _setParagraphBeforeContaining(xml, 'Наказ начальника ІСЗЗІ', layout.gapBeforeOrderMm);
+    return xml;
+  }
+
+  String _applyHeaderLayout(String source) {
+    var xml = source;
+    final widthMm = _clamp(layout.headerWidthMm, 45, 130);
+    final heightMm = _clamp(layout.headerHeightMm, 15, 70);
+    final widthEmu = (widthMm * 36000).round();
+    final heightEmu = (heightMm * 36000).round();
+    final widthPt = widthMm * 72 / 25.4;
+    final heightPt = heightMm * 72 / 25.4;
+    final insetPt = _clamp(layout.headerPaddingMm, 0, 10) * 72 / 25.4;
+    final headerHalfPoints = (_clamp(layout.headerFontPt, 7, 18) * 2).round();
+
+    xml = xml.replaceFirst(
+      RegExp(r'<wp:extent\s+cx="\d+"\s+cy="\d+"\s*/>'),
+      '<wp:extent cx="$widthEmu" cy="$heightEmu"/>',
+    );
+    xml = xml.replaceFirst(
+      RegExp(r'<a:ext\s+cx="\d+"\s+cy="\d+"\s*/>'),
+      '<a:ext cx="$widthEmu" cy="$heightEmu"/>',
+    );
+    xml = xml.replaceFirstMapped(
+      RegExp(r'<v:rect\b([^>]*)style="[^"]*"([^>]*)>'),
+      (match) => '<v:rect${match.group(1)}style="width:${widthPt.toStringAsFixed(1)}pt;height:${heightPt.toStringAsFixed(1)}pt"${match.group(2)}>',
+    );
+    xml = xml.replaceFirstMapped(
+      RegExp(r'<wps:bodyPr\b[^>]*>'),
+      (match) {
+        var tag = match.group(0)!;
+        final insetEmu = (_clamp(layout.headerPaddingMm, 0, 10) * 36000).round();
+        tag = _setXmlAttribute(tag, 'lIns', insetEmu.toString());
+        tag = _setXmlAttribute(tag, 'tIns', insetEmu.toString());
+        tag = _setXmlAttribute(tag, 'rIns', insetEmu.toString());
+        tag = _setXmlAttribute(tag, 'bIns', insetEmu.toString());
+        return tag;
+      },
+    );
+    xml = xml.replaceFirstMapped(
+      RegExp(r'<v:textbox\b[^>]*>'),
+      (match) {
+        var tag = match.group(0)!;
+        tag = _setXmlAttribute(
+          tag,
+          'inset',
+          '${insetPt.toStringAsFixed(1)}pt,${insetPt.toStringAsFixed(1)}pt,${insetPt.toStringAsFixed(1)}pt,${insetPt.toStringAsFixed(1)}pt',
+        );
+        return tag;
+      },
+    );
+
+    final txbx = RegExp(r'<w:txbxContent>[\s\S]*?</w:txbxContent>');
+    xml = xml.replaceAllMapped(txbx, (match) {
+      var block = match.group(0)!;
+      block = block
+          .replaceAll(RegExp(r'<w:sz\s+w:val="\d+"\s*/>'), '<w:sz w:val="$headerHalfPoints"/>')
+          .replaceAll(RegExp(r'<w:szCs\s+w:val="\d+"\s*/>'), '<w:szCs w:val="$headerHalfPoints"/>');
+      return block;
+    });
+
+    xml = _offsetTextBoxParagraph(
+      xml,
+      _mmToTwips(_clamp(layout.headerOffsetXmm, 0, 30)),
+      _mmToTwips(_clamp(layout.headerOffsetYmm, 0, 30)),
+    );
+
+    // The first table is the two-column top block: TextBox on the left,
+    // first-report addressee on the right. Changing the first column lets
+    // the user move the split without editing Word XML manually.
+    final topTable = RegExp(r'<w:tbl>[\s\S]*?</w:tbl>');
+    xml = xml.replaceFirstMapped(topTable, (match) {
+      var table = match.group(0)!;
+      const tableTotalMm = 152.4;
+      final leftMm = _clamp(layout.headerColumnWidthMm, 45, 110);
+      final rightMm = _clamp(tableTotalMm - leftMm, 35, 107.4);
+      final widths = <int>[_mmToTwips(leftMm), _mmToTwips(rightMm)];
+      var gridIndex = 0;
+      table = table.replaceAllMapped(RegExp(r'<w:gridCol\s+w:w="\d+"\s*/>'), (m) {
+        if (gridIndex >= 2) return m.group(0)!;
+        return '<w:gridCol w:w="${widths[gridIndex++]}"/>';
+      });
+      var cellIndex = 0;
+      table = table.replaceAllMapped(RegExp(r'<w:tcW\s+w:type="dxa"\s+w:w="\d+"\s*/>'), (m) {
+        if (cellIndex >= 2) return m.group(0)!;
+        return '<w:tcW w:type="dxa" w:w="${widths[cellIndex++]}"/>';
+      });
+      return table;
+    });
+    return xml;
+  }
+
+  static String _offsetTextBoxParagraph(
+    String source,
+    int leftTwips,
+    int beforeTwips,
+  ) {
+    final altStart = source.indexOf('<mc:AlternateContent');
+    if (altStart < 0) return source;
+    final altClose = source.indexOf('</mc:AlternateContent>', altStart);
+    if (altClose < 0) return source;
+    final start = source.lastIndexOf('<w:p', altStart);
+    final close = source.indexOf('</w:p>', altClose);
+    if (start < 0 || close < 0) return source;
+    final end = close + '</w:p>'.length;
+    var paragraph = source.substring(start, end);
+    paragraph = _patchParagraphProperties(paragraph, (pPr) {
+      var result = pPr;
+      final indent = RegExp(r'<w:ind\b[^>]*/>');
+      final indentMatch = indent.firstMatch(result);
+      if (indentMatch == null) {
+        result = result.replaceFirst(
+          '<w:pPr>',
+          '<w:pPr><w:ind w:left="$leftTwips"/>',
+        );
+      } else {
+        final tag = _setXmlAttribute(
+          indentMatch.group(0)!,
+          'w:left',
+          leftTwips.toString(),
+        );
+        result = result.replaceRange(indentMatch.start, indentMatch.end, tag);
+      }
+
+      final spacing = RegExp(r'<w:spacing\b[^>]*/>');
+      final spacingMatch = spacing.firstMatch(result);
+      if (spacingMatch == null) {
+        result = result.replaceFirst(
+          '<w:pPr>',
+          '<w:pPr><w:spacing w:before="$beforeTwips"/>',
+        );
+      } else {
+        final tag = _setXmlAttribute(
+          spacingMatch.group(0)!,
+          'w:before',
+          beforeTwips.toString(),
+        );
+        result = result.replaceRange(spacingMatch.start, spacingMatch.end, tag);
+      }
+      return result;
+    });
+    return source.replaceRange(start, end, paragraph);
+  }
+
+  String _applyMainParagraphLayout(String source) {
+    const needle = 'Відповідно до постанови';
+    final textIndex = source.indexOf(needle);
+    if (textIndex < 0) return source;
+    final start = source.lastIndexOf('<w:p', textIndex);
+    final close = source.indexOf('</w:p>', textIndex);
+    if (start < 0 || close < 0) return source;
+    final end = close + '</w:p>'.length;
+    var value = source.substring(start, end);
+    final halfPoints = (_clamp(layout.bodyFontPt, 9, 16) * 2).round();
+    value = value
+        .replaceAll(RegExp(r'<w:sz\s+w:val="\d+"\s*/>'), '<w:sz w:val="$halfPoints"/>')
+        .replaceAll(RegExp(r'<w:szCs\s+w:val="\d+"\s*/>'), '<w:szCs w:val="$halfPoints"/>');
+    value = _setParagraphIndent(
+      value,
+      _mmToTwips(_clamp(layout.firstLineIndentMm, 0, 30)),
+    );
+    value = _setParagraphLineSpacing(
+      value,
+      (_clamp(layout.lineSpacing, 0.8, 2.0) * 240).round(),
+    );
+    return source.replaceRange(start, end, value);
+  }
+
+  static String _setFirstExactParagraphBefore(String source, String text, double mm) {
+    final tokenIndex = source.indexOf('>$text<');
+    if (tokenIndex < 0) return source;
+    return _patchParagraphAroundIndex(
+      source,
+      tokenIndex,
+      (paragraph) => _setParagraphBefore(
+        paragraph,
+        _mmToTwips(_clamp(mm, 0, 30)),
+      ),
+    );
+  }
+
+  static String _setParagraphBeforeContaining(String source, String token, double mm) {
+    final tokenIndex = source.indexOf(token);
+    if (tokenIndex < 0) return source;
+    return _patchParagraphAroundIndex(
+      source,
+      tokenIndex,
+      (paragraph) => _setParagraphBefore(
+        paragraph,
+        _mmToTwips(_clamp(mm, 0, 30)),
+      ),
+    );
+  }
+
+  static String _patchParagraphAroundIndex(
+    String source,
+    int index,
+    String Function(String paragraph) patch,
+  ) {
+    final start = source.lastIndexOf('<w:p', index);
+    final close = source.indexOf('</w:p>', index);
+    if (start < 0 || close < 0) return source;
+    final end = close + '</w:p>'.length;
+    final paragraph = source.substring(start, end);
+    return source.replaceRange(start, end, patch(paragraph));
+  }
+
+  static String _setParagraphBefore(String paragraph, int before) {
+    return _patchParagraphProperties(paragraph, (pPr) {
+      final spacing = RegExp(r'<w:spacing\b[^>]*/>');
+      final match = spacing.firstMatch(pPr);
+      if (match == null) {
+        return pPr.replaceFirst('<w:pPr>', '<w:pPr><w:spacing w:before="$before"/>');
+      }
+      final tag = _setXmlAttribute(match.group(0)!, 'w:before', before.toString());
+      return pPr.replaceRange(match.start, match.end, tag);
+    });
+  }
+
+  static String _setParagraphIndent(String paragraph, int firstLine) {
+    return _patchParagraphProperties(paragraph, (pPr) {
+      final indent = RegExp(r'<w:ind\b[^>]*/>');
+      final match = indent.firstMatch(pPr);
+      if (match == null) {
+        return pPr.replaceFirst('<w:pPr>', '<w:pPr><w:ind w:firstLine="$firstLine"/>');
+      }
+      final tag = _setXmlAttribute(match.group(0)!, 'w:firstLine', firstLine.toString());
+      return pPr.replaceRange(match.start, match.end, tag);
+    });
+  }
+
+  static String _setParagraphLineSpacing(String paragraph, int line) {
+    return _patchParagraphProperties(paragraph, (pPr) {
+      final spacing = RegExp(r'<w:spacing\b[^>]*/>');
+      final match = spacing.firstMatch(pPr);
+      if (match == null) {
+        return pPr.replaceFirst(
+          '<w:pPr>',
+          '<w:pPr><w:spacing w:line="$line" w:lineRule="auto"/>',
+        );
+      }
+      var tag = match.group(0)!;
+      tag = _setXmlAttribute(tag, 'w:line', line.toString());
+      tag = _setXmlAttribute(tag, 'w:lineRule', 'auto');
+      return pPr.replaceRange(match.start, match.end, tag);
+    });
+  }
+
+  static String _patchParagraphProperties(
+    String paragraph,
+    String Function(String pPr) patch,
+  ) {
+    final pPr = RegExp(r'<w:pPr>[\s\S]*?</w:pPr>');
+    final match = pPr.firstMatch(paragraph);
+    if (match != null) {
+      final updated = patch(match.group(0)!);
+      return paragraph.replaceRange(match.start, match.end, updated);
+    }
+    final open = RegExp(r'<w:p\b[^>]*>').firstMatch(paragraph);
+    if (open == null) return paragraph;
+    final created = patch('<w:pPr></w:pPr>');
+    return paragraph.replaceRange(open.end, open.end, created);
+  }
+
+  static String _setXmlAttribute(String tag, String name, String value) {
+    final attr = RegExp('${RegExp.escape(name)}="[^"]*"');
+    if (attr.hasMatch(tag)) {
+      return tag.replaceFirst(attr, '$name="$value"');
+    }
+    final end = tag.endsWith('/>') ? '/>' : '>';
+    return tag.substring(0, tag.length - end.length) + ' $name="$value"' + end;
+  }
+
+  static int _mmToTwips(double mm) => (mm * 56.6929133858).round();
+
+  static double _clamp(double value, double min, double max) =>
+      value < min ? min : (value > max ? max : value);
 
   String _fillPersonPage(
     String source,

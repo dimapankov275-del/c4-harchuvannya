@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('v0.8.3 MASTER uses safe real TextBox with unique-ID placeholders', () async {
+  test('v0.8.4 MASTER uses safe real TextBox with unique-ID placeholders', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);
@@ -33,7 +33,7 @@ void main() {
     expect(xml.contains('{{H_DATE}}'), isTrue);
   });
 
-  test('v0.8.3 MASTER template has no empty tail paragraphs', () async {
+  test('v0.8.4 MASTER template has no empty tail paragraphs', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);
@@ -72,7 +72,7 @@ void main() {
     expect(lastText, isNotEmpty);
   });
 
-  test('v0.8.3 MASTER supports three-line addressees', () async {
+  test('v0.8.4 MASTER supports three-line addressees', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);
@@ -84,7 +84,7 @@ void main() {
     expect(xml.contains('{{R3_3}}'), isTrue);
   });
 
-  test('v0.8.3 MASTER keeps header and first-report addressee side by side', () async {
+  test('v0.8.4 MASTER keeps header and first-report addressee side by side', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
     final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     final archive = ZipDecoder().decodeBytes(bytes);

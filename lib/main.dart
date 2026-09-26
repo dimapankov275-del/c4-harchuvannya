@@ -335,7 +335,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.8.3';
+  String appVersion = '0.8.4';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -379,7 +379,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.8.3';
+      appVersion = '0.8.4';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
@@ -3617,6 +3617,196 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<void> _editDocumentLayout() async {
+    final service = reportService;
+    if (service == null || !widget.controller.isAdmin) return;
+    final current = service.layout;
+
+    String f(double value) {
+      final rounded = value.toStringAsFixed(2);
+      return rounded.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+    }
+
+    final controllers = <String, TextEditingController>{
+      'pageTopMm': TextEditingController(text: f(current.pageTopMm)),
+      'pageRightMm': TextEditingController(text: f(current.pageRightMm)),
+      'pageBottomMm': TextEditingController(text: f(current.pageBottomMm)),
+      'pageLeftMm': TextEditingController(text: f(current.pageLeftMm)),
+      'headerColumnWidthMm': TextEditingController(text: f(current.headerColumnWidthMm)),
+      'headerWidthMm': TextEditingController(text: f(current.headerWidthMm)),
+      'headerHeightMm': TextEditingController(text: f(current.headerHeightMm)),
+      'headerPaddingMm': TextEditingController(text: f(current.headerPaddingMm)),
+      'headerOffsetXmm': TextEditingController(text: f(current.headerOffsetXmm)),
+      'headerOffsetYmm': TextEditingController(text: f(current.headerOffsetYmm)),
+      'headerFontPt': TextEditingController(text: f(current.headerFontPt)),
+      'bodyFontPt': TextEditingController(text: f(current.bodyFontPt)),
+      'firstLineIndentMm': TextEditingController(text: f(current.firstLineIndentMm)),
+      'lineSpacing': TextEditingController(text: f(current.lineSpacing)),
+      'gapBeforeFirstReportMm': TextEditingController(text: f(current.gapBeforeFirstReportMm)),
+      'gapBeforePetitionMm': TextEditingController(text: f(current.gapBeforePetitionMm)),
+      'gapBeforeThirdReportMm': TextEditingController(text: f(current.gapBeforeThirdReportMm)),
+      'gapBeforeApprovalMm': TextEditingController(text: f(current.gapBeforeApprovalMm)),
+      'gapBeforeOrderMm': TextEditingController(text: f(current.gapBeforeOrderMm)),
+    };
+
+    double number(String key, double fallback, double min, double max) {
+      final raw = controllers[key]!.text.trim().replaceAll(',', '.');
+      final value = double.tryParse(raw) ?? fallback;
+      return value.clamp(min, max).toDouble();
+    }
+
+    ReportLayoutSettings readLayout() => ReportLayoutSettings(
+          pageTopMm: number('pageTopMm', current.pageTopMm, 0, 60),
+          pageRightMm: number('pageRightMm', current.pageRightMm, 0, 60),
+          pageBottomMm: number('pageBottomMm', current.pageBottomMm, 0, 60),
+          pageLeftMm: number('pageLeftMm', current.pageLeftMm, 0, 60),
+          headerColumnWidthMm: number('headerColumnWidthMm', current.headerColumnWidthMm, 45, 110),
+          headerWidthMm: number('headerWidthMm', current.headerWidthMm, 45, 130),
+          headerHeightMm: number('headerHeightMm', current.headerHeightMm, 15, 70),
+          headerPaddingMm: number('headerPaddingMm', current.headerPaddingMm, 0, 10),
+          headerOffsetXmm: number('headerOffsetXmm', current.headerOffsetXmm, 0, 30),
+          headerOffsetYmm: number('headerOffsetYmm', current.headerOffsetYmm, 0, 30),
+          headerFontPt: number('headerFontPt', current.headerFontPt, 7, 18),
+          bodyFontPt: number('bodyFontPt', current.bodyFontPt, 9, 16),
+          firstLineIndentMm: number('firstLineIndentMm', current.firstLineIndentMm, 0, 30),
+          lineSpacing: number('lineSpacing', current.lineSpacing, 0.8, 2.0),
+          gapBeforeFirstReportMm: number('gapBeforeFirstReportMm', current.gapBeforeFirstReportMm, 0, 30),
+          gapBeforePetitionMm: number('gapBeforePetitionMm', current.gapBeforePetitionMm, 0, 30),
+          gapBeforeThirdReportMm: number('gapBeforeThirdReportMm', current.gapBeforeThirdReportMm, 0, 30),
+          gapBeforeApprovalMm: number('gapBeforeApprovalMm', current.gapBeforeApprovalMm, 0, 30),
+          gapBeforeOrderMm: number('gapBeforeOrderMm', current.gapBeforeOrderMm, 0, 30),
+        );
+
+    void loadDefaults() {
+      const d = ReportLayoutSettings.defaults;
+      controllers['pageTopMm']!.text = f(d.pageTopMm);
+      controllers['pageRightMm']!.text = f(d.pageRightMm);
+      controllers['pageBottomMm']!.text = f(d.pageBottomMm);
+      controllers['pageLeftMm']!.text = f(d.pageLeftMm);
+      controllers['headerColumnWidthMm']!.text = f(d.headerColumnWidthMm);
+      controllers['headerWidthMm']!.text = f(d.headerWidthMm);
+      controllers['headerHeightMm']!.text = f(d.headerHeightMm);
+      controllers['headerPaddingMm']!.text = f(d.headerPaddingMm);
+      controllers['headerOffsetXmm']!.text = f(d.headerOffsetXmm);
+      controllers['headerOffsetYmm']!.text = f(d.headerOffsetYmm);
+      controllers['headerFontPt']!.text = f(d.headerFontPt);
+      controllers['bodyFontPt']!.text = f(d.bodyFontPt);
+      controllers['firstLineIndentMm']!.text = f(d.firstLineIndentMm);
+      controllers['lineSpacing']!.text = f(d.lineSpacing);
+      controllers['gapBeforeFirstReportMm']!.text = f(d.gapBeforeFirstReportMm);
+      controllers['gapBeforePetitionMm']!.text = f(d.gapBeforePetitionMm);
+      controllers['gapBeforeThirdReportMm']!.text = f(d.gapBeforeThirdReportMm);
+      controllers['gapBeforeApprovalMm']!.text = f(d.gapBeforeApprovalMm);
+      controllers['gapBeforeOrderMm']!.text = f(d.gapBeforeOrderMm);
+    }
+
+    Future<void> applyAndTest() async {
+      try {
+        await service.saveLayoutSettings(readLayout());
+        final report = await service.generateTestReport();
+        await service.openReport(report);
+        if (mounted) {
+          showAppNotice(context, 'Налаштування застосовано. Відкрито тестовий DOCX.');
+        }
+      } catch (e) {
+        if (mounted) showAppNotice(context, 'Не вдалося сформувати тестовий DOCX: $e');
+      }
+    }
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Оформлення DOCX'),
+        content: SizedBox(
+          width: 760,
+          height: 680,
+          child: SingleChildScrollView(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+              const Text(
+                'Змінюй значення, натискай «Застосувати + тест DOCX» і одразу перевіряй результат у Word.',
+                style: TextStyle(fontSize: 12, color: Color(0xFF91A8BC)),
+              ),
+              _settingsSection('Поля сторінки · мм'),
+              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
+                _numberSettingsField(controllers['pageTopMm']!, 'Верхнє', 150),
+                _numberSettingsField(controllers['pageRightMm']!, 'Праве', 150),
+                _numberSettingsField(controllers['pageBottomMm']!, 'Нижнє', 150),
+                _numberSettingsField(controllers['pageLeftMm']!, 'Ліве', 150),
+              ]),
+              _settingsSection('TextBox шапки'),
+              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
+                _numberSettingsField(controllers['headerColumnWidthMm']!, 'Ширина лівої колонки · мм', 220),
+                _numberSettingsField(controllers['headerWidthMm']!, 'Ширина TextBox · мм', 200),
+                _numberSettingsField(controllers['headerHeightMm']!, 'Висота TextBox · мм', 200),
+                _numberSettingsField(controllers['headerPaddingMm']!, 'Внутрішній відступ · мм', 200),
+                _numberSettingsField(controllers['headerOffsetXmm']!, 'Зсув TextBox вправо · мм', 210),
+                _numberSettingsField(controllers['headerOffsetYmm']!, 'Зсув TextBox вниз · мм', 210),
+                _numberSettingsField(controllers['headerFontPt']!, 'Шрифт шапки · pt', 180),
+              ]),
+              const SizedBox(height: 6),
+              const Text(
+                'Ширина лівої колонки змінює положення межі між TextBox і адресатом першого рапорту.',
+                style: TextStyle(fontSize: 11, color: Color(0xFF91A8BC)),
+              ),
+              _settingsSection('Основний текст рапорту'),
+              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
+                _numberSettingsField(controllers['bodyFontPt']!, 'Розмір шрифту · pt', 190),
+                _numberSettingsField(controllers['firstLineIndentMm']!, 'Абзацний відступ · мм', 200),
+                _numberSettingsField(controllers['lineSpacing']!, 'Міжрядковий · 1.0 / 1.15 / 1.5', 230),
+              ]),
+              _settingsSection('Відступи перед блоками · мм'),
+              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
+                _numberSettingsField(controllers['gapBeforeFirstReportMm']!, 'Перед 1-м РАПОРТ', 200),
+                _numberSettingsField(controllers['gapBeforePetitionMm']!, 'Перед клопотанням', 200),
+                _numberSettingsField(controllers['gapBeforeThirdReportMm']!, 'Перед 3-м рапортом', 200),
+                _numberSettingsField(controllers['gapBeforeApprovalMm']!, 'Перед ПОГОДЖЕНО', 200),
+                _numberSettingsField(controllers['gapBeforeOrderMm']!, 'Перед наказом', 200),
+              ]),
+            ]),
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(onPressed: loadDefaults, child: const Text('Стандартні')),
+          OutlinedButton.icon(
+            onPressed: applyAndTest,
+            icon: const Icon(Icons.preview_outlined),
+            label: const Text('Застосувати + тест DOCX'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Закрити'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Зберегти'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved == true) {
+      await service.saveLayoutSettings(readLayout());
+      if (mounted) showAppNotice(context, 'Оформлення DOCX збережено.');
+    }
+    for (final controller in controllers.values) {
+      controller.dispose();
+    }
+  }
+
+  Widget _numberSettingsField(
+    TextEditingController controller,
+    String label,
+    double width,
+  ) => SizedBox(
+        width: width,
+        child: TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: false),
+          decoration: InputDecoration(labelText: label),
+        ),
+      );
+
   Widget _settingsSection(String title) => Padding(
         padding: const EdgeInsets.only(top: 14, bottom: 7),
         child: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
@@ -3646,12 +3836,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       title: 'Документи',
       subtitle: 'Компенсація · Word MASTER · попередній перегляд · Telegram',
       actions: <Widget>[
-        if (widget.controller.isAdmin)
+        if (widget.controller.isAdmin) ...<Widget>[
           OutlinedButton.icon(
             onPressed: _editSettings,
             icon: const Icon(Icons.tune_rounded),
             label: const Text('Шапка і підписи'),
           ),
+          OutlinedButton.icon(
+            onPressed: _editDocumentLayout,
+            icon: const Icon(Icons.design_services_outlined),
+            label: const Text('Оформлення DOCX'),
+          ),
+        ],
       ],
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
         Card(
