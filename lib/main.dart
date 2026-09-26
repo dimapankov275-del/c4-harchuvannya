@@ -5258,18 +5258,6 @@ class _BackupScreenState extends State<BackupScreen> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
-  String _reason(String value) {
-    switch (value) {
-      case 'automatic':
-        return 'автоматичний';
-      case 'before-restore':
-        return 'перед відновленням';
-      case 'before-import':
-        return 'перед імпортом';
-      default:
-        return 'ручний';
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
