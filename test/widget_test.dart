@@ -31,8 +31,10 @@ void main() {
   });
 
   testWidgets('login screen opens', (WidgetTester tester) async {
+    final now = DateTime.now().toIso8601String();
     SharedPreferences.setMockInitialValues(<String, Object>{
-      'last_update_check': DateTime.now().toIso8601String(),
+      'last_update_check': now,
+      'last_auto_backup': now,
     });
 
     final controller = AppController();

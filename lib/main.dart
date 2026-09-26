@@ -519,7 +519,7 @@ class AppController extends ChangeNotifier {
       online = _prefs?.getBool('online_demo') ?? true;
     }
 
-    await _maybeAutoBackup();
+    unawaited(_maybeAutoBackup());
     unawaited(checkForUpdates());
   }
 
