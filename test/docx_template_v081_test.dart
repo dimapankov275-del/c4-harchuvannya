@@ -41,19 +41,26 @@ void main() {
         .allMatches(content)
         .map((match) => match.group(0)!)
         .toList();
-    expect(paragraphs, isNotEmpty);
+
+    expect(paragraphs.length, greaterThanOrEqualTo(2));
 
     final textNode = RegExp(r'<w:t\b[^>]*>([\s\S]*?)</w:t>');
-    final last = paragraphs.last;
-    final lastText = textNode
-        .allMatches(last)
+    String paragraphText(String paragraph) => textNode
+        .allMatches(paragraph)
         .map((item) => item.group(1) ?? '')
         .join()
         .trim();
 
-    expect(lastText, contains('Наказ начальника ІСЗЗІ'));
-  });
+    final beforeLastText = paragraphText(paragraphs[paragraphs.length - 2]);
+    final lastText = paragraphText(paragraphs.last);
 
+    // The template must end with the order line and its date/number line.
+    // If an empty paragraph is appended after them, lastText would be empty.
+    expect(beforeLastText, contains('Наказ начальника ІСЗЗІ'));
+    expect(lastText, contains('{{РІК}}'));
+    expect(lastText, contains('№'));
+    expect(lastText, isNotEmpty);
+  });
 
   test('v0.8.1 MASTER supports three-line addressees', () async {
     final data = await rootBundle.load('assets/templates/report_template.docx');
