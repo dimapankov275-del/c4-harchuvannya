@@ -438,6 +438,8 @@ class ReportService {
   static const _layoutKey = 'report_layout_v084';
   static const _templateAsset =
       'assets/templates/report_template.docx';
+  static const _editableTemplateAsset =
+      'assets/templates/report_editable_template.docx';
   static const _profilesAsset = 'assets/data/report_people.json';
 
   final SharedPreferences _prefs;
@@ -501,6 +503,46 @@ class ReportService {
   Future<void> resetLayoutSettings() async {
     layout = ReportLayoutSettings.defaults;
     await _prefs.remove(_layoutKey);
+  }
+
+  Future<bool> hasEditableTemplate() async {
+    final file = await _editableTemplateFile();
+    return file.exists();
+  }
+
+  Future<String> editableTemplatePath() async {
+    final file = await _editableTemplateFile();
+    return file.path;
+  }
+
+  Future<GeneratedReport> openEditableTemplate({bool reset = false}) async {
+    final file = await _editableTemplateFile();
+    if (reset || !await file.exists()) {
+      final data = await rootBundle.load(_editableTemplateAsset);
+      final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      await file.writeAsBytes(bytes, flush: true);
+    }
+
+    final result = await OpenFilex.open(file.path);
+    await _log(
+      reset ? 'TEMPLATE_RESET' : 'TEMPLATE_OPEN',
+      file.uri.pathSegments.last,
+      result.message,
+    );
+    return GeneratedReport(
+      group: 'TEMPLATE',
+      fileName: file.uri.pathSegments.last,
+      path: file.path,
+      personCount: 1,
+    );
+  }
+
+  Future<void> removeEditableTemplate() async {
+    final file = await _editableTemplateFile();
+    if (await file.exists()) {
+      await file.delete();
+      await _log('TEMPLATE_REMOVE', file.uri.pathSegments.last, 'Повернення до стандартного шаблону');
+    }
   }
 
   ReportPersonProfile? profileFor(String name) {
@@ -655,12 +697,22 @@ class ReportService {
   }
 
   Future<Uint8List> _buildDocx(List<CompensationReportPerson> persons) async {
-    final data = await rootBundle.load(_templateAsset);
-    final templateBytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    final editableFile = await _editableTemplateFile();
+    final useEditableTemplate = await editableFile.exists();
+    final Uint8List templateBytes;
+    if (useEditableTemplate) {
+      templateBytes = await editableFile.readAsBytes();
+    } else {
+      final data = await rootBundle.load(_templateAsset);
+      templateBytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    }
     final templateArchive = ZipDecoder().decodeBytes(templateBytes);
     final xmlFile = templateArchive.findFile('word/document.xml');
     if (xmlFile == null) throw StateError('У Word-шаблоні не знайдено document.xml.');
     final templateXml = utf8.decode(xmlFile.content as List<int>);
+    if (useEditableTemplate) {
+      _validateEditableTemplate(templateXml);
+    }
 
     final bodyMatch = RegExp(
       r'<w:body>([\s\S]*?)(<w:sectPr[\s\S]*?</w:sectPr>)\s*</w:body>',
@@ -670,10 +722,13 @@ class ReportService {
     // Keep the real TextBox in the MASTER, but sanitize paragraph metadata.
     // Each duplicated page receives its own TextBox IDs in _fillPersonPage,
     // which prevents Microsoft Word from reporting duplicate drawing IDs.
-    final bodyTemplate = _applyDocumentLayout(
-      _sanitizeTemplateBody(bodyMatch.group(1)!),
-    );
-    final section = _applyPageMargins(bodyMatch.group(2)!);
+    final sanitizedBody = _sanitizeTemplateBody(bodyMatch.group(1)!);
+    final bodyTemplate = useEditableTemplate
+        ? sanitizedBody
+        : _applyDocumentLayout(sanitizedBody);
+    final section = useEditableTemplate
+        ? bodyMatch.group(2)!
+        : _applyPageMargins(bodyMatch.group(2)!);
     final pages = <String>[];
     for (var index = 0; index < persons.length; index++) {
       pages.add(_fillPersonPage(bodyTemplate, persons[index], index));
@@ -1010,73 +1065,214 @@ class ReportService {
     CompensationReportPerson person,
     int pageIndex,
   ) {
-    final p = person.profile;
-    final values = <String, String>{
-      '{{H1}}': settings.headerLine1,
-      '{{H2}}': settings.headerLine2,
-      '{{H3}}': settings.headerLine3,
-      '{{H4}}': settings.headerLine4,
-      '{{H_RANK}}': settings.headerRank,
-      '{{H_PERSON}}': settings.headerName,
-      '{{H_DATE}}': settings.headerDate,
-      '{{TB_DOCPR}}': (pageIndex + 1).toString(),
-      '{{TB_ID}}': (pageIndex + 1).toString(),
-      '{{TB_SPID}}': (1026 + pageIndex).toString(),
-      '{{YEAR}}': person.days.first.day.year.toString(),
-      '{{R1_1}}': settings.r1Line1,
-      '{{R1_2}}': settings.r1Line2,
-      '{{КОМПЕНСАЦІЇ}}': person.compensationText,
-      '{{ПОСАДА_ДАВ}}': p.positionDative,
-      '{{ЗВАННЯ_ДАВ}}': p.rankDative,
-      '{{ПІБ_ДАВ}}': p.fullNameDativeStyled,
-      '{{ПОСАДА_НАЗ}}': _upperFirst(p.position),
-      '{{ЗВАННЯ_НАЗ}}': p.rank,
-      '{{ПІДПИС}}': p.signatureName,
-      '{{РІК}}': person.days.first.day.year.toString(),
-      '{{R2_1}}': settings.r2Line1,
-      '{{R2_2}}': settings.r2Line2,
-      '{{R2_3}}': settings.r2Line3,
-      '{{R2_4}}': settings.r2Line4,
-      '{{ЗВАННЯ_РОД}}': p.rankGenitive,
-      '{{ПРІЗВИЩЕ_РОД_ІНІЦІАЛИ}}': p.surnameGenitiveInitials,
-      '{{CC_POS}}': settings.ccPosition,
-      '{{CC_INST}}': settings.ccInstitution,
-      '{{CC_RANK}}': settings.ccRank,
-      '{{CC_NAME}}': settings.ccName,
-      '{{R3_1}}': settings.r3Line1,
-      '{{R3_2}}': settings.r3Line2,
-      '{{R3_3}}': settings.r3Line3,
-      '{{R3_PETITION}}': settings.r3Petition,
-      '{{R3_POS1}}': settings.r3Position1,
-      '{{R3_POS2}}': settings.r3Position2,
-      '{{R3_POS3}}': settings.r3Position3,
-      '{{R3_RANK}}': settings.r3Rank,
-      '{{R3_NAME}}': settings.r3Name,
-      '{{DOC_POS1}}': settings.doctorPosition1,
-      '{{DOC_POS2}}': settings.doctorPosition2,
-      '{{DOC_RANK}}': settings.doctorRank,
-      '{{DOC_NAME}}': settings.doctorName,
-    };
-
+    final values = _pageValues(person, pageIndex);
     var xml = _sanitizeTemplateBody(source);
 
-    // If an optional placeholder is empty, remove its entire paragraph.
-    // Replacing only the text with an empty string left visible blank ¶ rows
-    // in Word (R2_3, R2_4, R3_POS3, DOC_POS2, etc.).
+    // In the user-editable MASTER every dynamic value is stored in a Word
+    // content control (SDT). Empty optional values remove their whole
+    // paragraph only in the generated copy; the saved MASTER remains intact.
     for (final entry in values.entries) {
       if (entry.value.trim().isEmpty) {
-        xml = _removeParagraphContaining(xml, entry.key);
+        xml = _removeParagraphContaining(xml, '{{${entry.key}}}');
+        xml = _removeParagraphContainingSdtTag(xml, entry.key);
       }
     }
 
+    xml = _fillContentControls(xml, values);
+
+    // Factory MASTER still uses {{TOKEN}} placeholders. Keep this fallback so
+    // both the built-in and the manually edited SDT template are supported.
     for (final entry in values.entries) {
-      xml = xml.replaceAll(entry.key, _xmlEscape(entry.value));
+      xml = xml.replaceAll('{{${entry.key}}}', _xmlEscape(entry.value));
     }
 
-    // Remove any paragraph that became truly empty after replacement. This
-    // also strips the old four empty paragraphs at the end of the MASTER.
+    xml = _rekeyTextBoxIds(xml, pageIndex);
     xml = _removeEmptyParagraphs(xml);
     return xml.trim();
+  }
+
+  Map<String, String> _pageValues(
+    CompensationReportPerson person,
+    int pageIndex,
+  ) {
+    final p = person.profile;
+    return <String, String>{
+      'H1': settings.headerLine1,
+      'H2': settings.headerLine2,
+      'H3': settings.headerLine3,
+      'H4': settings.headerLine4,
+      'H_RANK': settings.headerRank,
+      'H_PERSON': settings.headerName,
+      'H_DATE': settings.headerDate,
+      'TB_DOCPR': (pageIndex + 1).toString(),
+      'TB_ID': (pageIndex + 1).toString(),
+      'TB_SPID': (1026 + pageIndex).toString(),
+      'YEAR': person.days.first.day.year.toString(),
+      'R1_1': settings.r1Line1,
+      'R1_2': settings.r1Line2,
+      'КОМПЕНСАЦІЇ': person.compensationText,
+      'ПОСАДА_ДАВ': p.positionDative,
+      'ЗВАННЯ_ДАВ': p.rankDative,
+      'ПІБ_ДАВ': p.fullNameDativeStyled,
+      'ПОСАДА_НАЗ': _upperFirst(p.position),
+      'ЗВАННЯ_НАЗ': p.rank,
+      'ПІДПИС': p.signatureName,
+      'РІК': person.days.first.day.year.toString(),
+      'R2_1': settings.r2Line1,
+      'R2_2': settings.r2Line2,
+      'R2_3': settings.r2Line3,
+      'R2_4': settings.r2Line4,
+      'ЗВАННЯ_РОД': p.rankGenitive,
+      'ПРІЗВИЩЕ_РОД_ІНІЦІАЛИ': p.surnameGenitiveInitials,
+      'CC_POS': settings.ccPosition,
+      'CC_INST': settings.ccInstitution,
+      'CC_RANK': settings.ccRank,
+      'CC_NAME': settings.ccName,
+      'R3_1': settings.r3Line1,
+      'R3_2': settings.r3Line2,
+      'R3_3': settings.r3Line3,
+      'R3_PETITION': settings.r3Petition,
+      'R3_POS1': settings.r3Position1,
+      'R3_POS2': settings.r3Position2,
+      'R3_POS3': settings.r3Position3,
+      'R3_RANK': settings.r3Rank,
+      'R3_NAME': settings.r3Name,
+      'DOC_POS1': settings.doctorPosition1,
+      'DOC_POS2': settings.doctorPosition2,
+      'DOC_RANK': settings.doctorRank,
+      'DOC_NAME': settings.doctorName,
+    };
+  }
+
+  static String _fillContentControls(
+    String source,
+    Map<String, String> values,
+  ) {
+    final sdt = RegExp(r'<w:sdt\b[\s\S]*?</w:sdt>');
+    final tagPattern = RegExp(r'<w:tag\b[^>]*w:val="([^"]+)"[^>]*/?>');
+    final contentPattern = RegExp(r'<w:sdtContent>([\s\S]*?)</w:sdtContent>');
+    final textPattern = RegExp(r'<w:t\b([^>]*)>[\s\S]*?</w:t>');
+
+    return source.replaceAllMapped(sdt, (match) {
+      final block = match.group(0)!;
+      final tagMatch = tagPattern.firstMatch(block);
+      if (tagMatch == null) return block;
+      final tag = tagMatch.group(1)!;
+      if (!values.containsKey(tag)) return block;
+
+      final contentMatch = contentPattern.firstMatch(block);
+      if (contentMatch == null) return block;
+      final content = contentMatch.group(1)!;
+      final textMatches = textPattern.allMatches(content).toList();
+      final escaped = _xmlEscape(values[tag]!);
+
+      String newContent;
+      if (textMatches.isEmpty) {
+        newContent = '<w:r><w:t>$escaped</w:t></w:r>';
+      } else {
+        var cursor = 0;
+        final buffer = StringBuffer();
+        for (var i = 0; i < textMatches.length; i++) {
+          final item = textMatches[i];
+          buffer.write(content.substring(cursor, item.start));
+          final attrs = item.group(1) ?? '';
+          buffer.write('<w:t$attrs>${i == 0 ? escaped : ''}</w:t>');
+          cursor = item.end;
+        }
+        buffer.write(content.substring(cursor));
+        newContent = buffer.toString();
+      }
+
+      final replacement = '<w:sdtContent>$newContent</w:sdtContent>';
+      return block.replaceRange(contentMatch.start, contentMatch.end, replacement);
+    });
+  }
+
+  static String _removeParagraphContainingSdtTag(
+    String source,
+    String tag,
+  ) {
+    final paragraph = RegExp(r'<w:p\b[^>]*>[\s\S]*?</w:p>');
+    final marker = RegExp(
+      '<w:tag\\b[^>]*w:val="${RegExp.escape(tag)}"[^>]*/?>',
+    );
+    return source.replaceAllMapped(paragraph, (match) {
+      final value = match.group(0)!;
+      return marker.hasMatch(value) ? '' : value;
+    });
+  }
+
+  static String _rekeyTextBoxIds(String source, int pageIndex) {
+    final docPrId = pageIndex + 1;
+    final spid = 1026 + pageIndex;
+    final anchorId = (0xC4000000 + docPrId)
+        .toRadixString(16)
+        .padLeft(8, '0')
+        .toUpperCase();
+    final editId = (0xD4000000 + docPrId)
+        .toRadixString(16)
+        .padLeft(8, '0')
+        .toUpperCase();
+    var xml = source;
+    xml = xml.replaceFirstMapped(
+      RegExp(r'<wp:docPr\b[^>]*>'),
+      (match) {
+        var tag = match.group(0)!;
+        tag = _setXmlAttribute(tag, 'id', docPrId.toString());
+        tag = _setXmlAttribute(tag, 'name', 'Шапка до наказу $docPrId');
+        return tag;
+      },
+    );
+    xml = xml.replaceFirstMapped(
+      RegExp(r'<wp:anchor\b[^>]*>'),
+      (match) {
+        var tag = match.group(0)!;
+        if (tag.contains('wp14:anchorId=')) {
+          tag = _setXmlAttribute(tag, 'wp14:anchorId', anchorId);
+        }
+        if (tag.contains('wp14:editId=')) {
+          tag = _setXmlAttribute(tag, 'wp14:editId', editId);
+        }
+        return tag;
+      },
+    );
+    xml = xml.replaceFirstMapped(
+      RegExp(r'<v:(?:rect|shape)\b[^>]*>'),
+      (match) {
+        var tag = match.group(0)!;
+        tag = _setXmlAttribute(tag, 'id', 'HeaderTextBox_$docPrId');
+        tag = _setXmlAttribute(tag, 'o:spid', '_x0000_s$spid');
+        return tag;
+      },
+    );
+    return xml;
+  }
+
+  static void _validateEditableTemplate(String xml) {
+    const requiredTags = <String>{
+      'H1', 'H2', 'H3', 'H4', 'H_RANK', 'H_PERSON', 'H_DATE', 'YEAR',
+      'R1_1', 'R1_2', 'КОМПЕНСАЦІЇ', 'ПОСАДА_ДАВ', 'ЗВАННЯ_ДАВ',
+      'ПІБ_ДАВ', 'ПОСАДА_НАЗ', 'ЗВАННЯ_НАЗ', 'ПІДПИС', 'РІК',
+      'R2_1', 'R2_2', 'R2_3', 'R2_4', 'ЗВАННЯ_РОД',
+      'ПРІЗВИЩЕ_РОД_ІНІЦІАЛИ', 'CC_POS', 'CC_INST', 'CC_RANK', 'CC_NAME',
+      'R3_1', 'R3_2', 'R3_3', 'R3_PETITION', 'R3_POS1', 'R3_POS2',
+      'R3_POS3', 'R3_RANK', 'R3_NAME', 'DOC_POS1', 'DOC_POS2', 'DOC_RANK',
+      'DOC_NAME',
+    };
+    final missing = <String>[];
+    for (final tag in requiredTags) {
+      final pattern = RegExp(
+        '<w:tag\\b[^>]*w:val="${RegExp.escape(tag)}"[^>]*/?>',
+      );
+      if (!pattern.hasMatch(xml)) missing.add(tag);
+    }
+    if (missing.isNotEmpty) {
+      throw StateError(
+        'У «Моїй тестовій сторінці» видалено службові поля: '
+        '${missing.take(6).join(', ')}${missing.length > 6 ? '…' : ''}. '
+        'Відновіть стандартну тестову сторінку і повторіть оформлення.',
+      );
+    }
   }
 
   static String _sanitizeTemplateBody(String source) {
@@ -1110,7 +1306,8 @@ class ReportService {
           value.contains('<w:tab') ||
           value.contains('<w:drawing') ||
           value.contains('<w:pict') ||
-          value.contains('<w:object')) {
+          value.contains('<w:object') ||
+          value.contains('<w:sdt')) {
         return value;
       }
 
@@ -1137,7 +1334,15 @@ class ReportService {
         .allMatches(xml)
         .map((match) => match.group(1)!)
         .toList();
-    final shapeIds = RegExp(r'<v:rect\b[^>]*\bid="([^"]+)"')
+    final shapeIds = RegExp(r'<v:(?:rect|shape)\b[^>]*\bid="([^"]+)"')
+        .allMatches(xml)
+        .map((match) => match.group(1)!)
+        .toList();
+    final anchorIds = RegExp(r'<wp:anchor\b[^>]*wp14:anchorId="([^"]+)"')
+        .allMatches(xml)
+        .map((match) => match.group(1)!)
+        .toList();
+    final editIds = RegExp(r'<wp:anchor\b[^>]*wp14:editId="([^"]+)"')
         .allMatches(xml)
         .map((match) => match.group(1)!)
         .toList();
@@ -1154,9 +1359,18 @@ class ReportService {
         'Некоректні або дубльовані ID TextBox у VML.',
       );
     }
-    if (xml.contains('<v:shape') || xml.contains('<w14:textOutline')) {
+    if (anchorIds.isNotEmpty &&
+        (anchorIds.length != personCount ||
+            anchorIds.toSet().length != anchorIds.length)) {
+      throw StateError('Некоректні або дубльовані anchorId плаваючого TextBox.');
+    }
+    if (editIds.isNotEmpty &&
+        (editIds.length != personCount || editIds.toSet().length != editIds.length)) {
+      throw StateError('Некоректні або дубльовані editId плаваючого TextBox.');
+    }
+    if (xml.contains('<v:textpath') || xml.contains('<w14:textOutline')) {
       throw StateError(
-        'У DOCX залишився старий WordArt замість безпечного TextBox.',
+        'У DOCX залишився WordArt замість звичайного TextBox.',
       );
     }
 
@@ -1224,6 +1438,17 @@ class ReportService {
     await _prefs.setString(
       _historyKey,
       jsonEncode(history.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<File> _editableTemplateFile() async {
+    final root = await getApplicationDocumentsDirectory();
+    final dir = Directory(
+      '${root.path}${Platform.pathSeparator}C4 Harchuvannya${Platform.pathSeparator}Шаблони',
+    );
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return File(
+      '${dir.path}${Platform.pathSeparator}Моя_тестова_сторінка.docx',
     );
   }
 

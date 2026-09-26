@@ -1,7 +1,7 @@
 name: c4_harchuvannya
 publish_to: 'none'
 description: Cross-platform client for C4 food accounting and calculations.
-version: 0.8.4+13
+version: 0.8.5+14
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -28,4 +28,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/templates/report_template.docx
+    - assets/templates/report_editable_template.docx
     - assets/data/report_people.json

@@ -335,7 +335,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.8.4';
+  String appVersion = '0.8.5';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -379,7 +379,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.8.4';
+      appVersion = '0.8.5';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
@@ -3617,9 +3617,138 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<void> _editWordMasterTemplate() async {
+    final service = reportService;
+    if (service == null || !widget.controller.isAdmin) return;
+
+    final hasCustom = await service.hasEditableTemplate();
+    final path = await service.editableTemplatePath();
+    if (!mounted) return;
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Моя тестова сторінка Word'),
+        content: SizedBox(
+          width: 680,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                hasCustom
+                    ? 'Активна твоя відредагована тестова сторінка. Усі нові рапорти беруть оформлення саме з неї.'
+                    : 'Зараз використовується стандартний шаблон. Відкрий тестову сторінку — програма створить твою особисту копію й автоматично почне використовувати її для наступних рапортів.',
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Theme.of(context).dividerColor),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text('Як користуватись', style: TextStyle(fontWeight: FontWeight.w800)),
+                    SizedBox(height: 6),
+                    Text('1. Натисни «Відкрити у Word».\n'
+                        '2. Вручну рухай TextBox, відступи, табуляцію, шрифти й блоки.\n'
+                        '3. У Word натисни Ctrl+S і закрий документ.\n'
+                        '4. Формуй звичайний рапорт — програма використає це оформлення.'),
+                    SizedBox(height: 8),
+                    Text(
+                      'Важливо: не видаляй службові поля всередині тексту. Їх можна форматувати й переміщати, але не видаляти повністю.',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF91A8BC)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              SelectableText(
+                'Файл: $path',
+                style: const TextStyle(fontSize: 10, color: Color(0xFF91A8BC)),
+              ),
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          if (hasCustom)
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'reset'),
+              child: const Text('Відновити заводську'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Закрити'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, 'open'),
+            icon: const Icon(Icons.open_in_new),
+            label: Text(hasCustom ? 'Відкрити у Word' : 'Створити й відкрити'),
+          ),
+        ],
+      ),
+    );
+
+    if (action == 'open') {
+      try {
+        await service.openEditableTemplate();
+        if (mounted) {
+          showAppNotice(
+            context,
+            'Відкрито «Мою тестову сторінку». Після редагування натисни Ctrl+S у Word — наступні рапорти автоматично використають це оформлення.',
+          );
+        }
+      } catch (e) {
+        if (mounted) showAppNotice(context, 'Не вдалося відкрити тестову сторінку: $e');
+      }
+    } else if (action == 'reset') {
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext confirmContext) => AlertDialog(
+          title: const Text('Відновити заводську сторінку?'),
+          content: const Text(
+            'Твої ручні зміни оформлення в «Моїй тестовій сторінці» будуть перезаписані.',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(confirmContext, false),
+              child: const Text('Скасувати'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(confirmContext, true),
+              child: const Text('Відновити'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) {
+        try {
+          await service.openEditableTemplate(reset: true);
+          if (mounted) {
+            showAppNotice(context, 'Заводську тестову сторінку відновлено й відкрито у Word.');
+          }
+        } catch (e) {
+          if (mounted) showAppNotice(context, 'Не вдалося відновити шаблон: $e');
+        }
+      }
+    }
+  }
+
   Future<void> _editDocumentLayout() async {
     final service = reportService;
     if (service == null || !widget.controller.isAdmin) return;
+    if (await service.hasEditableTemplate()) {
+      if (mounted) {
+        showAppNotice(
+          context,
+          'Активна «Моя тестова сторінка Word». Її оформлення змінюється безпосередньо у Word через кнопку «Тестова сторінка».',
+        );
+      }
+      return;
+    }
     final current = service.layout;
 
     String f(double value) {
@@ -3841,6 +3970,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             onPressed: _editSettings,
             icon: const Icon(Icons.tune_rounded),
             label: const Text('Шапка і підписи'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _editWordMasterTemplate,
+            icon: const Icon(Icons.description_outlined),
+            label: const Text('Тестова сторінка'),
           ),
           OutlinedButton.icon(
             onPressed: _editDocumentLayout,
