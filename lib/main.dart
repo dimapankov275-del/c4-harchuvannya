@@ -390,7 +390,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.9.0';
+  String appVersion = '1.0.0';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -435,7 +435,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.9.0';
+      appVersion = '1.0.0';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
