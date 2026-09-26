@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app_api.dart';
 import 'update_service.dart';
 import 'report_service.dart';
+import 'admin_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -245,6 +246,7 @@ class AuditEntry {
     required this.oldValue,
     required this.newValue,
     required this.action,
+    this.details = '',
   });
 
   final DateTime time;
@@ -257,6 +259,7 @@ class AuditEntry {
   final String oldValue;
   final String newValue;
   final String action;
+  final String details;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'time': time.toIso8601String(),
@@ -269,6 +272,7 @@ class AuditEntry {
         'oldValue': oldValue,
         'newValue': newValue,
         'action': action,
+        'details': details,
       };
 
   static AuditEntry fromJson(Map<String, dynamic> map) => AuditEntry(
@@ -282,7 +286,55 @@ class AuditEntry {
         oldValue: map['oldValue'].toString(),
         newValue: map['newValue'].toString(),
         action: map['action'].toString(),
+        details: map['details']?.toString() ?? '',
       );
+}
+
+String auditActionTitle(String action) {
+  switch (action) {
+    case 'STATUS_SET':
+      return 'Зміна статусу';
+    case 'BULK_STATUS_SET':
+      return 'Масова зміна статусів';
+    case 'BULK_UNDO':
+      return 'Відкат масової зміни';
+    case 'PERSON_EDIT':
+      return 'Редагування особи';
+    case 'USER_CREATE':
+      return 'Створено користувача';
+    case 'USER_UPDATE':
+      return 'Змінено користувача';
+    case 'USER_DISABLE':
+      return 'Доступ користувача';
+    case 'USER_PASSWORD_RESET':
+      return 'Скидання пароля';
+    case 'USER_SESSIONS_TERMINATED':
+      return 'Сесії завершено';
+    case 'DOC_GENERATE':
+      return 'Сформовано DOCX';
+    case 'DOC_SHARE':
+      return 'Надсилання документа';
+    case 'TEMPLATE_OPEN':
+      return 'Відкрито Word-шаблон';
+    case 'TEMPLATE_RESET':
+      return 'Відновлено Word-шаблон';
+    case 'BACKUP_CREATE':
+      return 'Створено backup';
+    case 'BACKUP_AUTO':
+      return 'Автоматичний backup';
+    case 'BACKUP_RESTORE':
+      return 'Відновлено backup';
+    case 'BACKUP_DELETE':
+      return 'Видалено backup';
+    case 'CSV_EXPORT':
+      return 'Експорт CSV';
+    case 'CSV_IMPORT':
+      return 'Імпорт CSV';
+    case 'SYNC':
+      return 'Синхронізація';
+    default:
+      return action;
+  }
 }
 
 class AppController extends ChangeNotifier {
@@ -317,6 +369,9 @@ class AppController extends ChangeNotifier {
   AppApi? _api;
   String _sessionToken = '';
   List<Map<String, dynamic>> _pendingOps = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _lastBulkUndo = <Map<String, dynamic>>[];
+
+  final AdminService adminService = AdminService();
 
   AppUser? currentUser;
   ThemeMode themeMode = ThemeMode.dark;
@@ -335,7 +390,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.8.5';
+  String appVersion = '0.9.0';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -366,6 +421,7 @@ class AppController extends ChangeNotifier {
   bool get realBackend => apiUrl.trim().isNotEmpty;
   bool get canEdit => currentUser?.role != UserRole.duty;
   bool get isAdmin => currentUser?.role == UserRole.admin;
+  bool get canUndoLastBulk => _lastBulkUndo.isNotEmpty && canEdit;
 
   String get backendLabel {
     if (!realBackend) return 'Демо-режим';
@@ -379,7 +435,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.8.5';
+      appVersion = '0.9.0';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
@@ -434,6 +490,16 @@ class AppController extends ChangeNotifier {
     }
     pendingChanges = realBackend ? _pendingOps.length : (_prefs?.getInt('pending_changes') ?? 0);
 
+    final undoJson = _prefs?.getString('last_bulk_undo');
+    if (undoJson != null && undoJson.isNotEmpty) {
+      try {
+        final list = jsonDecode(undoJson) as List<dynamic>;
+        _lastBulkUndo = list.map((dynamic e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {
+        _lastBulkUndo = <Map<String, dynamic>>[];
+      }
+    }
+
     if (realBackend) {
       _sessionToken = await _secureStorage.read(key: 'c4_session_token') ?? '';
       if (_sessionToken.isNotEmpty) {
@@ -453,7 +519,281 @@ class AppController extends ChangeNotifier {
       online = _prefs?.getBool('online_demo') ?? true;
     }
 
+    await _maybeAutoBackup();
     unawaited(checkForUpdates());
+  }
+
+  Future<void> _saveHistory() async {
+    if (history.length > 1000) history.removeRange(1000, history.length);
+    await _prefs?.setString(
+      'history',
+      jsonEncode(history.map((AuditEntry e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<void> _addAudit({
+    required String action,
+    String personId = '',
+    String personName = '',
+    String group = '',
+    String day = '',
+    String meal = '',
+    String oldValue = '',
+    String newValue = '',
+    String details = '',
+    String? actor,
+  }) async {
+    history.insert(
+      0,
+      AuditEntry(
+        time: DateTime.now(),
+        actor: actor ?? currentUser?.login ?? 'system',
+        personId: personId,
+        personName: personName,
+        group: group,
+        day: day,
+        meal: meal,
+        oldValue: oldValue,
+        newValue: newValue,
+        action: action,
+        details: details,
+      ),
+    );
+    await _saveHistory();
+  }
+
+  Future<void> logSystemAction({
+    required String action,
+    String details = '',
+    String group = '',
+    String personName = '',
+    String oldValue = '',
+    String newValue = '',
+  }) async {
+    await _addAudit(
+      action: action,
+      details: details,
+      group: group,
+      personName: personName,
+      oldValue: oldValue,
+      newValue: newValue,
+    );
+    notifyListeners();
+  }
+
+  Map<String, dynamic> _backupSnapshot() => <String, dynamic>{
+        'appVersion': appVersion,
+        'people': people.map((Person p) => p.toJson()).toList(),
+        'history': history.map((AuditEntry e) => e.toJson()).toList(),
+        'pendingOps': _pendingOps,
+        'lastBulkUndo': _lastBulkUndo,
+        'pendingChanges': pendingChanges,
+        'lastSyncedAt': lastSyncedAt?.toIso8601String(),
+        'theme': themeMode == ThemeMode.light ? 'light' : 'dark',
+        'telegramLinked': telegramLinked,
+        'telegramName': telegramName,
+        'backendConfigured': realBackend,
+      };
+
+  Future<void> _maybeAutoBackup() async {
+    if (people.isEmpty) return;
+    final raw = _prefs?.getString('last_auto_backup') ?? '';
+    final last = DateTime.tryParse(raw);
+    final now = DateTime.now();
+    if (last != null && now.difference(last) < const Duration(days: 3)) return;
+    try {
+      final backup = await adminService.createBackup(
+        snapshot: _backupSnapshot(),
+        reason: 'automatic',
+      );
+      await _prefs?.setString('last_auto_backup', now.toIso8601String());
+      await _addAudit(
+        action: 'BACKUP_AUTO',
+        details: backup.fileName,
+        actor: 'system',
+      );
+    } catch (_) {
+      // Автоматичний backup не повинен блокувати запуск застосунку.
+    }
+  }
+
+  Future<BackupFileInfo> createManualBackup() async {
+    if (!isAdmin) throw StateError('Резервні копії доступні тільки адміністратору.');
+    final backup = await adminService.createBackup(
+      snapshot: _backupSnapshot(),
+      reason: 'manual',
+    );
+    await _prefs?.setString('last_auto_backup', DateTime.now().toIso8601String());
+    await _addAudit(action: 'BACKUP_CREATE', details: backup.fileName);
+    notifyListeners();
+    return backup;
+  }
+
+  Future<List<BackupFileInfo>> listBackups() => adminService.listBackups();
+
+  Future<String> openBackupFolder() => adminService.openBackupFolder();
+
+  Future<void> deleteBackup(BackupFileInfo backup) async {
+    if (!isAdmin) throw StateError('Резервні копії доступні тільки адміністратору.');
+    await adminService.deleteBackup(backup.path);
+    await _addAudit(action: 'BACKUP_DELETE', details: backup.fileName);
+    notifyListeners();
+  }
+
+  Future<void> restoreBackup(BackupFileInfo backup) async {
+    if (!isAdmin) throw StateError('Відновлення доступне тільки адміністратору.');
+
+    if (people.isNotEmpty) {
+      await adminService.createBackup(
+        snapshot: _backupSnapshot(),
+        reason: 'before-restore',
+      );
+    }
+
+    final snapshot = await adminService.restoreBackup(backup.path);
+    final rawPeople = (snapshot['people'] as List?) ?? const <dynamic>[];
+    final rawHistory = (snapshot['history'] as List?) ?? const <dynamic>[];
+    final rawPending = (snapshot['pendingOps'] as List?) ?? const <dynamic>[];
+    final rawUndo = (snapshot['lastBulkUndo'] as List?) ?? const <dynamic>[];
+
+    people = rawPeople
+        .map((dynamic e) => Person.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+    history = rawHistory
+        .map((dynamic e) => AuditEntry.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+    _pendingOps = realBackend
+        ? <Map<String, dynamic>>[]
+        : rawPending
+            .map((dynamic e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+    _lastBulkUndo = realBackend
+        ? <Map<String, dynamic>>[]
+        : rawUndo
+            .map((dynamic e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+    pendingChanges = realBackend
+        ? 0
+        : int.tryParse(snapshot['pendingChanges']?.toString() ?? '') ?? 0;
+    lastSyncedAt = DateTime.tryParse(snapshot['lastSyncedAt']?.toString() ?? '');
+    telegramLinked = snapshot['telegramLinked'] == true;
+    telegramName = snapshot['telegramName']?.toString() ?? '';
+    final restoredTheme = snapshot['theme']?.toString() ?? 'dark';
+    themeMode = restoredTheme == 'light' ? ThemeMode.light : ThemeMode.dark;
+
+    await _prefs?.setString('theme', restoredTheme);
+    await _prefs?.setBool('telegram_linked', telegramLinked);
+    await _prefs?.setString('telegram_name', telegramName);
+    await _saveBulkUndo();
+    await _saveAll();
+    await _addAudit(
+      action: 'BACKUP_RESTORE',
+      details: '${backup.fileName}; перед відновленням автоматично створено safety backup',
+    );
+    notifyListeners();
+  }
+
+  List<Map<String, String>> _personnelCsvRows() => people
+      .map((Person p) => <String, String>{
+            'id': p.id,
+            'rank': p.rank,
+            'name': p.name,
+            'group': p.group,
+          })
+      .toList();
+
+  Future<String> exportPersonnelCsv() async {
+    if (!isAdmin) throw StateError('Експорт доступний тільки адміністратору.');
+    final path = await adminService.exportPersonnelCsv(_personnelCsvRows());
+    await _addAudit(action: 'CSV_EXPORT', details: path);
+    notifyListeners();
+    return path;
+  }
+
+  Future<String> preparePersonnelImportCsv() async {
+    if (!isAdmin) throw StateError('Імпорт доступний тільки адміністратору.');
+    return adminService.prepareImportCsv(_personnelCsvRows());
+  }
+
+  Future<int> importPersonnelCsv() async {
+    if (!isAdmin) throw StateError('Імпорт доступний тільки адміністратору.');
+    if (realBackend) {
+      throw StateError(
+        'При підключеному Google Sheets особовий склад змінюється у таблиці. '
+        'CSV-імпорт у застосунок доступний тільки в локальному/демо режимі.',
+      );
+    }
+
+    final source = await adminService.readImportCsv();
+    if (source.rows.isEmpty) throw StateError('У CSV немає рядків для імпорту.');
+    await adminService.createBackup(
+      snapshot: _backupSnapshot(),
+      reason: 'before-import',
+    );
+
+    var changed = 0;
+    final seenIds = <String>{};
+    final seenKeys = <String>{};
+    for (var index = 0; index < source.rows.length; index++) {
+      final row = source.rows[index];
+      final name = row['name']?.trim() ?? '';
+      final rank = row['rank']?.trim() ?? '';
+      final group = row['group']?.trim() ?? '';
+      final id = row['id']?.trim() ?? '';
+      if (name.isEmpty) continue;
+      if (!groups.contains(group)) {
+        throw FormatException('Некоректна група "$group" для $name. Дозволено С-41…С-45.');
+      }
+      if (id.isNotEmpty && !seenIds.add(id)) {
+        throw FormatException('У CSV повторюється ID "$id". Виправ дубль перед імпортом.');
+      }
+      final personKey = '$group|${_normalizePersonName(name)}';
+      if (!seenKeys.add(personKey)) {
+        throw FormatException('У CSV повторюється особа $name ($group). Виправ дубль перед імпортом.');
+      }
+
+      Person? target;
+      if (id.isNotEmpty) {
+        for (final person in people) {
+          if (person.id == id) {
+            target = person;
+            break;
+          }
+        }
+      }
+      if (target == null) {
+        for (final person in people) {
+          if (person.group == group &&
+              _normalizePersonName(person.name) == _normalizePersonName(name)) {
+            target = person;
+            break;
+          }
+        }
+      }
+
+      if (target == null) {
+        people.add(Person(
+          id: id.isNotEmpty ? id : 'imp_${DateTime.now().microsecondsSinceEpoch}_$index',
+          rank: rank,
+          name: name,
+          group: group,
+        ));
+        changed++;
+      } else if (target.rank != rank || target.name != name || target.group != group) {
+        target.rank = rank;
+        target.name = name;
+        target.group = group;
+        changed++;
+      }
+    }
+
+    await _savePeople();
+    await _addAudit(
+      action: 'CSV_IMPORT',
+      details: '${source.rows.length} рядків; змінено/додано $changed; ${source.path}',
+    );
+    notifyListeners();
+    return changed;
   }
 
   Future<AppUpdateInfo?> checkForUpdates({bool force = false}) async {
@@ -716,6 +1056,12 @@ class AppController extends ChangeNotifier {
       groups: role == UserRole.editor ? groups : AppController.groups,
       password: password,
     );
+    await _addAudit(
+      action: 'USER_CREATE',
+      personName: login.trim(),
+      newValue: roleTitle(role),
+      details: displayName.trim(),
+    );
     await loadManagedUsers();
   }
 
@@ -739,6 +1085,13 @@ class AppController extends ChangeNotifier {
       final updated = Map<String, dynamic>.from(response['user'] as Map);
       currentUser = _userFromMap(updated);
     }
+    await _addAudit(
+      action: 'USER_UPDATE',
+      personName: user.login,
+      oldValue: roleTitle(user.role),
+      newValue: roleTitle(role),
+      details: displayName.trim(),
+    );
     await loadManagedUsers();
   }
 
@@ -748,6 +1101,11 @@ class AppController extends ChangeNotifier {
     }
     _api!.token = _sessionToken;
     await _api!.setUserDisabled(login: user.login, disabled: disabled);
+    await _addAudit(
+      action: 'USER_DISABLE',
+      personName: user.login,
+      newValue: disabled ? 'Вимкнений' : 'Активний',
+    );
     await loadManagedUsers();
   }
 
@@ -757,8 +1115,14 @@ class AppController extends ChangeNotifier {
     }
     _api!.token = _sessionToken;
     final response = await _api!.resetUserPassword(login: user.login, newPassword: newPassword);
+    final terminated = int.tryParse(response['terminatedSessions']?.toString() ?? '') ?? 0;
+    await _addAudit(
+      action: 'USER_PASSWORD_RESET',
+      personName: user.login,
+      details: 'Завершено сесій: $terminated',
+    );
     await loadManagedUsers();
-    return int.tryParse(response['terminatedSessions']?.toString() ?? '') ?? 0;
+    return terminated;
   }
 
   Future<int> terminateManagedUserSessions(ManagedUser user) async {
@@ -767,8 +1131,14 @@ class AppController extends ChangeNotifier {
     }
     _api!.token = _sessionToken;
     final response = await _api!.terminateUserSessions(user.login);
+    final terminated = int.tryParse(response['terminatedSessions']?.toString() ?? '') ?? 0;
+    await _addAudit(
+      action: 'USER_SESSIONS_TERMINATED',
+      personName: user.login,
+      details: 'Завершено сесій: $terminated',
+    );
     await loadManagedUsers();
-    return int.tryParse(response['terminatedSessions']?.toString() ?? '') ?? 0;
+    return terminated;
   }
 
   Future<void> setTheme(ThemeMode mode) async {
@@ -791,7 +1161,7 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> syncNow() async {
+  Future<void> syncNow({bool recordAudit = false}) async {
     if (syncing) return;
     syncing = true;
     lastError = '';
@@ -819,6 +1189,12 @@ class AppController extends ChangeNotifier {
         lastSyncedAt = DateTime.tryParse(response['syncedAt']?.toString() ?? '') ?? DateTime.now();
         online = true;
         await _savePeople();
+        if (recordAudit) {
+          await _addAudit(
+            action: 'SYNC',
+            details: 'Google Sheets · ${people.length} осіб · черга ${_pendingOps.length}',
+          );
+        }
       } catch (error) {
         online = false;
         lastError = error.toString();
@@ -838,6 +1214,10 @@ class AppController extends ChangeNotifier {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     pendingChanges = 0;
     await _prefs?.setInt('pending_changes', pendingChanges);
+    lastSyncedAt = DateTime.now();
+    if (recordAudit) {
+      await _addAudit(action: 'SYNC', details: 'Локальний/демо режим');
+    }
     syncing = false;
     notifyListeners();
   }
@@ -879,6 +1259,14 @@ class AppController extends ChangeNotifier {
     pendingChanges = _pendingOps.length;
     await _prefs?.setString('pending_ops', jsonEncode(_pendingOps));
     await _prefs?.setInt('pending_changes', pendingChanges);
+  }
+
+  Future<void> _saveBulkUndo() async {
+    if (_lastBulkUndo.isEmpty) {
+      await _prefs?.remove('last_bulk_undo');
+    } else {
+      await _prefs?.setString('last_bulk_undo', jsonEncode(_lastBulkUndo));
+    }
   }
 
   Future<void> setMark({
@@ -946,16 +1334,77 @@ class AppController extends ChangeNotifier {
     required Set<Meal> meals,
     required Mark mark,
   }) async {
+    final undo = <Map<String, dynamic>>[];
     var cursor = DateTime(start.year, start.month, start.day);
     final last = DateTime(end.year, end.month, end.day);
     while (!cursor.isAfter(last)) {
       for (final person in selected) {
         for (final meal in meals) {
+          final old = person.mark(cursor, meal);
+          if (old == mark) continue;
+          undo.add(<String, dynamic>{
+            'personId': person.id,
+            'date': dateKey(cursor),
+            'meal': meal.name,
+            'old': markText(old),
+          });
           await setMark(person: person, day: cursor, meal: meal, mark: mark);
         }
       }
       cursor = cursor.add(const Duration(days: 1));
     }
+
+    _lastBulkUndo = undo;
+    await _saveBulkUndo();
+    if (undo.isNotEmpty) {
+      await _addAudit(
+        action: 'BULK_STATUS_SET',
+        group: selected.map((p) => p.group).toSet().join(', '),
+        day: '${dateKey(start)} — ${dateKey(end)}',
+        newValue: markText(mark).isEmpty ? 'очищено' : markText(mark),
+        details: '${undo.length} клітинок; ${selected.length} осіб; ${meals.map(mealTitle).join(', ')}',
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<int> undoLastBulk() async {
+    if (!canUndoLastBulk) return 0;
+    final snapshot = List<Map<String, dynamic>>.from(_lastBulkUndo);
+    _lastBulkUndo = <Map<String, dynamic>>[];
+    await _saveBulkUndo();
+    var restored = 0;
+    for (final item in snapshot) {
+      final personId = item['personId']?.toString() ?? '';
+      Person? person;
+      for (final candidate in people) {
+        if (candidate.id == personId) {
+          person = candidate;
+          break;
+        }
+      }
+      if (person == null) continue;
+      final day = DateTime.tryParse(item['date']?.toString() ?? '');
+      if (day == null) continue;
+      final mealRaw = item['meal']?.toString() ?? '';
+      Meal? meal;
+      for (final candidate in Meal.values) {
+        if (candidate.name == mealRaw) {
+          meal = candidate;
+          break;
+        }
+      }
+      if (meal == null) continue;
+      final old = markFromText(item['old']?.toString() ?? '');
+      await setMark(person: person, day: day, meal: meal, mark: old);
+      restored++;
+    }
+    await _addAudit(
+      action: 'BULK_UNDO',
+      details: 'Відновлено $restored із ${snapshot.length} змін',
+    );
+    notifyListeners();
+    return restored;
   }
 
   Future<void> updatePerson(Person person, String rank, String name) async {
@@ -1042,7 +1491,8 @@ class AppController extends ChangeNotifier {
 
   Future<void> _saveAll() async {
     await _savePeople();
-    await _prefs?.setString('history', jsonEncode(history.take(500).map((AuditEntry e) => e.toJson()).toList()));
+    if (history.length > 1000) history.removeRange(1000, history.length);
+    await _prefs?.setString('history', jsonEncode(history.map((AuditEntry e) => e.toJson()).toList()));
     await _prefs?.setInt('pending_changes', pendingChanges);
     if (realBackend) await _savePendingOps();
   }
@@ -1721,24 +2171,22 @@ class _HomeShellState extends State<HomeShell> {
     final common = <NavDestination>[
       NavDestination('Головна', Icons.home_outlined, Icons.home_rounded, () => DashboardScreen(controller: widget.controller, onNavigate: _navigateByTitle)),
     ];
+    common.addAll(<NavDestination>[
+      NavDestination('Особовий склад', Icons.groups_2_outlined, Icons.groups_2_rounded, () => PersonnelScreen(controller: widget.controller)),
+      NavDestination('Статуси', Icons.fact_check_outlined, Icons.fact_check_rounded, () => StatusesScreen(controller: widget.controller)),
+      NavDestination('Розрахунки', Icons.bar_chart_outlined, Icons.bar_chart_rounded, () => CalculationScreen(controller: widget.controller)),
+      NavDestination('Шпиталь', Icons.local_hospital_outlined, Icons.local_hospital_rounded, () => AbsenceOverviewScreen(controller: widget.controller, mark: Mark.sh)),
+      NavDestination('Відрядження', Icons.work_outline_rounded, Icons.work_rounded, () => AbsenceOverviewScreen(controller: widget.controller, mark: Mark.vd)),
+    ]);
     if (role != UserRole.duty) {
-      common.addAll(<NavDestination>[
-        NavDestination('Особовий склад', Icons.groups_2_outlined, Icons.groups_2_rounded, () => PersonnelScreen(controller: widget.controller)),
-        NavDestination('Статуси', Icons.fact_check_outlined, Icons.fact_check_rounded, () => StatusesScreen(controller: widget.controller)),
-      ]);
-    }
-    common.add(NavDestination('Розрахунки', Icons.bar_chart_outlined, Icons.bar_chart_rounded, () => CalculationScreen(controller: widget.controller)));
-    if (role != UserRole.duty) {
-      common.addAll(<NavDestination>[
-        NavDestination('Шпиталь', Icons.local_hospital_outlined, Icons.local_hospital_rounded, () => AbsenceOverviewScreen(controller: widget.controller, mark: Mark.sh)),
-        NavDestination('Відрядження', Icons.work_outline_rounded, Icons.work_rounded, () => AbsenceOverviewScreen(controller: widget.controller, mark: Mark.vd)),
+      common.add(
         NavDestination('Документи', Icons.description_outlined, Icons.description_rounded, () => DocumentsScreen(controller: widget.controller)),
-      ]);
+      );
     }
     if (role == UserRole.admin) {
       common.addAll(<NavDestination>[
         NavDestination('Користувачі', Icons.manage_accounts_outlined, Icons.manage_accounts_rounded, () => UsersScreen(controller: widget.controller)),
-        NavDestination('Історія змін', Icons.history_outlined, Icons.history_rounded, () => HistoryScreen(controller: widget.controller)),
+        NavDestination('Журнал дій', Icons.history_outlined, Icons.history_rounded, () => HistoryScreen(controller: widget.controller)),
       ]);
     }
     common.add(NavDestination('Налаштування', Icons.settings_outlined, Icons.settings_rounded, () => SettingsScreen(controller: widget.controller)));
@@ -1887,7 +2335,7 @@ class _HomeShellState extends State<HomeShell> {
                             onPressed: () => widget.controller.setTheme(widget.controller.themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark),
                             icon: Icon(widget.controller.themeMode == ThemeMode.dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
                           ),
-                          IconButton(onPressed: widget.controller.syncNow, icon: const Icon(Icons.sync_rounded)),
+                          IconButton(onPressed: () => widget.controller.syncNow(recordAudit: true), icon: const Icon(Icons.sync_rounded)),
                         ],
                       ),
                     ),
@@ -1952,7 +2400,7 @@ class SyncBadge extends StatelessWidget {
             : 'Синхронізовано';
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: controller.online ? controller.syncNow : null,
+      onTap: controller.online ? () => controller.syncNow(recordAudit: true) : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         child: Row(
@@ -2082,8 +2530,14 @@ class DashboardScreen extends StatelessWidget {
                 children: <Widget>[
                   QuickActionCard(width: cardWidth, colors: const <Color>[Color(0xFF259C61), Color(0xFF147D4B)], icon: Icons.calendar_today_rounded, title: 'На сьогодні', subtitle: 'Розрахунок за сьогодні', onTap: () => onNavigate('Розрахунки')),
                   QuickActionCard(width: cardWidth, colors: const <Color>[Color(0xFF268DF0), Color(0xFF1268C2)], icon: Icons.arrow_forward_rounded, title: 'На завтра', subtitle: 'Розрахунок на завтра', onTap: () => onNavigate('Розрахунки')),
-                  if (controller.currentUser?.role != UserRole.duty)
-                    QuickActionCard(width: cardWidth, colors: const <Color>[Color(0xFF7858EF), Color(0xFF5B37D5)], icon: Icons.edit_calendar_rounded, title: 'Проставити статуси', subtitle: 'Відкрити таблицю', onTap: () => onNavigate('Статуси')),
+                  QuickActionCard(
+                    width: cardWidth,
+                    colors: const <Color>[Color(0xFF7858EF), Color(0xFF5B37D5)],
+                    icon: Icons.edit_calendar_rounded,
+                    title: controller.canEdit ? 'Проставити статуси' : 'Переглянути статуси',
+                    subtitle: controller.canEdit ? 'Відкрити таблицю' : 'Режим перегляду',
+                    onTap: () => onNavigate('Статуси'),
+                  ),
                   QuickActionCard(width: cardWidth, colors: const <Color>[Color(0xFFF5A01C), Color(0xFFDF7C0D)], icon: Icons.bar_chart_rounded, title: 'Розрахунки', subtitle: 'Дата або період', onTap: () => onNavigate('Розрахунки')),
                   if (controller.currentUser?.role != UserRole.duty)
                     QuickActionCard(width: cardWidth, colors: const <Color>[Color(0xFF455F76), Color(0xFF30485E)], icon: Icons.table_chart_rounded, title: 'Місячний Excel', subtitle: 'Формування звіту', onTap: () => onNavigate('Документи')),
@@ -2310,8 +2764,10 @@ class RecentActionsPanel extends StatelessWidget {
       <String, String>{'name': 'Гончар І.В.', 'detail': 'С-43 · Вечеря · Ш', 'time': '09:17'},
     ];
     final rows = controller.history.take(4).map((AuditEntry e) => <String, String>{
-          'name': e.personName,
-          'detail': '${e.group} · ${e.meal} · ${e.newValue}',
+          'name': e.personName.isNotEmpty ? e.personName : auditActionTitle(e.action),
+          'detail': e.details.isNotEmpty
+              ? e.details
+              : <String>[e.group, e.meal, e.newValue].where((value) => value.isNotEmpty).join(' · '),
           'time': '${e.time.hour.toString().padLeft(2, '0')}:${e.time.minute.toString().padLeft(2, '0')}',
         }).toList();
     final data = rows.isEmpty ? fallback : rows;
@@ -2570,7 +3026,7 @@ class _StatusesScreenState extends State<StatusesScreen> {
   void initState() {
     super.initState();
     final allowed = widget.controller.currentUser?.role == UserRole.editor ? widget.controller.currentUser!.groups : AppController.groups;
-    group = allowed.first;
+    group = allowed.isEmpty ? AppController.groups.first : allowed.first;
   }
 
   @override
@@ -2584,12 +3040,21 @@ class _StatusesScreenState extends State<StatusesScreen> {
     }).toList();
     return PageFrame(
       title: 'Статуси',
-      subtitle: 'К · В · Ш · Вд',
+      subtitle: widget.controller.canEdit ? 'К · В · Ш · Вд' : 'К · В · Ш · Вд · режим перегляду',
       actions: <Widget>[
         OutlinedButton.icon(onPressed: () async {
           final picked = await showDatePicker(context: context, initialDate: day, firstDate: DateTime(2025), lastDate: DateTime(2035));
           if (picked != null) setState(() => day = picked);
         }, icon: const Icon(Icons.calendar_today_outlined), label: Text(longDate(day))),
+        if (widget.controller.canUndoLastBulk)
+          OutlinedButton.icon(
+            onPressed: () async {
+              final restored = await widget.controller.undoLastBulk();
+              if (mounted) showAppNotice(context, 'Відновлено змін: $restored.');
+            },
+            icon: const Icon(Icons.undo_rounded),
+            label: const Text('Відкотити масову'),
+          ),
         FilledButton.icon(onPressed: selectedIds.isEmpty ? null : _bulkDialog, icon: const Icon(Icons.playlist_add_check), label: Text('Масово · ${selectedIds.length}')),
       ],
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
@@ -2631,6 +3096,7 @@ class _StatusesScreenState extends State<StatusesScreen> {
                   for (final meal in Meal.values)
                     DataCell(MarkButton(mark: person.mark(day, meal), enabled: widget.controller.canEdit, onTap: () => _pickMark(person, meal))),
                   DataCell(PopupMenuButton<String>(
+                    enabled: widget.controller.canEdit,
                     itemBuilder: (_) => const <PopupMenuEntry<String>>[
                       PopupMenuItem(value: 'day', child: Text('Поставити на весь день')),
                       PopupMenuItem(value: 'clear', child: Text('Очистити весь день')),
@@ -2704,6 +3170,11 @@ class _StatusesScreenState extends State<StatusesScreen> {
                 const SizedBox(height: 12),
                 for (final meal in Meal.values)
                   CheckboxListTile(contentPadding: EdgeInsets.zero, value: meals.contains(meal), title: Text(mealTitle(meal)), onChanged: (bool? value) => setLocal(() { if (value == true) { meals.add(meal); } else { meals.remove(meal); } })),
+                const SizedBox(height: 6),
+                Text(
+                  'Буде перевірено до ${chosenPeople.length * meals.length * max(0, end.difference(start).inDays + 1)} клітинок. Зміняться тільки ті, де значення відрізняється.',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF91A8BC)),
+                ),
               ]),
             ),
           ),
@@ -2716,7 +3187,20 @@ class _StatusesScreenState extends State<StatusesScreen> {
     );
     if (confirmed == true) {
       await widget.controller.bulkSet(selected: chosenPeople, start: start, end: end, meals: meals, mark: mark);
-      if (mounted) showAppNotice(context, 'Масові зміни застосовано.');
+      if (!mounted) return;
+      showAppNotice(
+        context,
+        'Масові зміни застосовано.',
+        action: widget.controller.canUndoLastBulk
+            ? SnackBarAction(
+                label: 'Скасувати',
+                onPressed: () async {
+                  final restored = await widget.controller.undoLastBulk();
+                  if (mounted) showAppNotice(context, 'Відновлено змін: $restored.');
+                },
+              )
+            : null,
+      );
     }
   }
 }
@@ -3403,6 +3887,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         end: endDay,
         separateByGroup: group == 'Всі' && separateByGroup,
       );
+      await widget.controller.logSystemAction(
+        action: 'DOC_GENERATE',
+        group: group,
+        details: '${longDate(startDay)} — ${longDate(endDay)}; ${selected.length} осіб; ${files.length} файлів',
+      );
       if (!mounted) return;
       setState(() => generated = files);
       showAppNotice(context, 'Сформовано DOCX: ${files.length}. Осіб: ${selected.length}.');
@@ -3420,6 +3909,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (service == null || files.isEmpty) return;
     try {
       final result = await service.shareReports(files);
+      await widget.controller.logSystemAction(
+        action: 'DOC_SHARE',
+        details: files.map((e) => e.fileName).join(', '),
+      );
       if (!mounted) return;
       showAppNotice(
         context,
@@ -3694,6 +4187,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (action == 'open') {
       try {
         await service.openEditableTemplate();
+        await widget.controller.logSystemAction(
+          action: 'TEMPLATE_OPEN',
+          details: path,
+        );
         if (mounted) {
           showAppNotice(
             context,
@@ -3727,6 +4224,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if (confirmed == true) {
         try {
           await service.openEditableTemplate(reset: true);
+          await widget.controller.logSystemAction(
+            action: 'TEMPLATE_RESET',
+            details: path,
+          );
           if (mounted) {
             showAppNotice(context, 'Заводську тестову сторінку відновлено й відкрито у Word.');
           }
@@ -3736,205 +4237,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
     }
   }
-
-  Future<void> _editDocumentLayout() async {
-    final service = reportService;
-    if (service == null || !widget.controller.isAdmin) return;
-    if (await service.hasEditableTemplate()) {
-      if (mounted) {
-        showAppNotice(
-          context,
-          'Активна «Моя тестова сторінка Word». Її оформлення змінюється безпосередньо у Word через кнопку «Тестова сторінка».',
-        );
-      }
-      return;
-    }
-    final current = service.layout;
-
-    String f(double value) {
-      final rounded = value.toStringAsFixed(2);
-      return rounded.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
-    }
-
-    final controllers = <String, TextEditingController>{
-      'pageTopMm': TextEditingController(text: f(current.pageTopMm)),
-      'pageRightMm': TextEditingController(text: f(current.pageRightMm)),
-      'pageBottomMm': TextEditingController(text: f(current.pageBottomMm)),
-      'pageLeftMm': TextEditingController(text: f(current.pageLeftMm)),
-      'headerColumnWidthMm': TextEditingController(text: f(current.headerColumnWidthMm)),
-      'headerWidthMm': TextEditingController(text: f(current.headerWidthMm)),
-      'headerHeightMm': TextEditingController(text: f(current.headerHeightMm)),
-      'headerPaddingMm': TextEditingController(text: f(current.headerPaddingMm)),
-      'headerOffsetXmm': TextEditingController(text: f(current.headerOffsetXmm)),
-      'headerOffsetYmm': TextEditingController(text: f(current.headerOffsetYmm)),
-      'headerFontPt': TextEditingController(text: f(current.headerFontPt)),
-      'bodyFontPt': TextEditingController(text: f(current.bodyFontPt)),
-      'firstLineIndentMm': TextEditingController(text: f(current.firstLineIndentMm)),
-      'lineSpacing': TextEditingController(text: f(current.lineSpacing)),
-      'gapBeforeFirstReportMm': TextEditingController(text: f(current.gapBeforeFirstReportMm)),
-      'gapBeforePetitionMm': TextEditingController(text: f(current.gapBeforePetitionMm)),
-      'gapBeforeThirdReportMm': TextEditingController(text: f(current.gapBeforeThirdReportMm)),
-      'gapBeforeApprovalMm': TextEditingController(text: f(current.gapBeforeApprovalMm)),
-      'gapBeforeOrderMm': TextEditingController(text: f(current.gapBeforeOrderMm)),
-    };
-
-    double number(String key, double fallback, double min, double max) {
-      final raw = controllers[key]!.text.trim().replaceAll(',', '.');
-      final value = double.tryParse(raw) ?? fallback;
-      return value.clamp(min, max).toDouble();
-    }
-
-    ReportLayoutSettings readLayout() => ReportLayoutSettings(
-          pageTopMm: number('pageTopMm', current.pageTopMm, 0, 60),
-          pageRightMm: number('pageRightMm', current.pageRightMm, 0, 60),
-          pageBottomMm: number('pageBottomMm', current.pageBottomMm, 0, 60),
-          pageLeftMm: number('pageLeftMm', current.pageLeftMm, 0, 60),
-          headerColumnWidthMm: number('headerColumnWidthMm', current.headerColumnWidthMm, 45, 110),
-          headerWidthMm: number('headerWidthMm', current.headerWidthMm, 45, 130),
-          headerHeightMm: number('headerHeightMm', current.headerHeightMm, 15, 70),
-          headerPaddingMm: number('headerPaddingMm', current.headerPaddingMm, 0, 10),
-          headerOffsetXmm: number('headerOffsetXmm', current.headerOffsetXmm, 0, 30),
-          headerOffsetYmm: number('headerOffsetYmm', current.headerOffsetYmm, 0, 30),
-          headerFontPt: number('headerFontPt', current.headerFontPt, 7, 18),
-          bodyFontPt: number('bodyFontPt', current.bodyFontPt, 9, 16),
-          firstLineIndentMm: number('firstLineIndentMm', current.firstLineIndentMm, 0, 30),
-          lineSpacing: number('lineSpacing', current.lineSpacing, 0.8, 2.0),
-          gapBeforeFirstReportMm: number('gapBeforeFirstReportMm', current.gapBeforeFirstReportMm, 0, 30),
-          gapBeforePetitionMm: number('gapBeforePetitionMm', current.gapBeforePetitionMm, 0, 30),
-          gapBeforeThirdReportMm: number('gapBeforeThirdReportMm', current.gapBeforeThirdReportMm, 0, 30),
-          gapBeforeApprovalMm: number('gapBeforeApprovalMm', current.gapBeforeApprovalMm, 0, 30),
-          gapBeforeOrderMm: number('gapBeforeOrderMm', current.gapBeforeOrderMm, 0, 30),
-        );
-
-    void loadDefaults() {
-      const d = ReportLayoutSettings.defaults;
-      controllers['pageTopMm']!.text = f(d.pageTopMm);
-      controllers['pageRightMm']!.text = f(d.pageRightMm);
-      controllers['pageBottomMm']!.text = f(d.pageBottomMm);
-      controllers['pageLeftMm']!.text = f(d.pageLeftMm);
-      controllers['headerColumnWidthMm']!.text = f(d.headerColumnWidthMm);
-      controllers['headerWidthMm']!.text = f(d.headerWidthMm);
-      controllers['headerHeightMm']!.text = f(d.headerHeightMm);
-      controllers['headerPaddingMm']!.text = f(d.headerPaddingMm);
-      controllers['headerOffsetXmm']!.text = f(d.headerOffsetXmm);
-      controllers['headerOffsetYmm']!.text = f(d.headerOffsetYmm);
-      controllers['headerFontPt']!.text = f(d.headerFontPt);
-      controllers['bodyFontPt']!.text = f(d.bodyFontPt);
-      controllers['firstLineIndentMm']!.text = f(d.firstLineIndentMm);
-      controllers['lineSpacing']!.text = f(d.lineSpacing);
-      controllers['gapBeforeFirstReportMm']!.text = f(d.gapBeforeFirstReportMm);
-      controllers['gapBeforePetitionMm']!.text = f(d.gapBeforePetitionMm);
-      controllers['gapBeforeThirdReportMm']!.text = f(d.gapBeforeThirdReportMm);
-      controllers['gapBeforeApprovalMm']!.text = f(d.gapBeforeApprovalMm);
-      controllers['gapBeforeOrderMm']!.text = f(d.gapBeforeOrderMm);
-    }
-
-    Future<void> applyAndTest() async {
-      try {
-        await service.saveLayoutSettings(readLayout());
-        final report = await service.generateTestReport();
-        await service.openReport(report);
-        if (mounted) {
-          showAppNotice(context, 'Налаштування застосовано. Відкрито тестовий DOCX.');
-        }
-      } catch (e) {
-        if (mounted) showAppNotice(context, 'Не вдалося сформувати тестовий DOCX: $e');
-      }
-    }
-
-    final saved = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Оформлення DOCX'),
-        content: SizedBox(
-          width: 760,
-          height: 680,
-          child: SingleChildScrollView(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
-              const Text(
-                'Змінюй значення, натискай «Застосувати + тест DOCX» і одразу перевіряй результат у Word.',
-                style: TextStyle(fontSize: 12, color: Color(0xFF91A8BC)),
-              ),
-              _settingsSection('Поля сторінки · мм'),
-              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
-                _numberSettingsField(controllers['pageTopMm']!, 'Верхнє', 150),
-                _numberSettingsField(controllers['pageRightMm']!, 'Праве', 150),
-                _numberSettingsField(controllers['pageBottomMm']!, 'Нижнє', 150),
-                _numberSettingsField(controllers['pageLeftMm']!, 'Ліве', 150),
-              ]),
-              _settingsSection('TextBox шапки'),
-              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
-                _numberSettingsField(controllers['headerColumnWidthMm']!, 'Ширина лівої колонки · мм', 220),
-                _numberSettingsField(controllers['headerWidthMm']!, 'Ширина TextBox · мм', 200),
-                _numberSettingsField(controllers['headerHeightMm']!, 'Висота TextBox · мм', 200),
-                _numberSettingsField(controllers['headerPaddingMm']!, 'Внутрішній відступ · мм', 200),
-                _numberSettingsField(controllers['headerOffsetXmm']!, 'Зсув TextBox вправо · мм', 210),
-                _numberSettingsField(controllers['headerOffsetYmm']!, 'Зсув TextBox вниз · мм', 210),
-                _numberSettingsField(controllers['headerFontPt']!, 'Шрифт шапки · pt', 180),
-              ]),
-              const SizedBox(height: 6),
-              const Text(
-                'Ширина лівої колонки змінює положення межі між TextBox і адресатом першого рапорту.',
-                style: TextStyle(fontSize: 11, color: Color(0xFF91A8BC)),
-              ),
-              _settingsSection('Основний текст рапорту'),
-              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
-                _numberSettingsField(controllers['bodyFontPt']!, 'Розмір шрифту · pt', 190),
-                _numberSettingsField(controllers['firstLineIndentMm']!, 'Абзацний відступ · мм', 200),
-                _numberSettingsField(controllers['lineSpacing']!, 'Міжрядковий · 1.0 / 1.15 / 1.5', 230),
-              ]),
-              _settingsSection('Відступи перед блоками · мм'),
-              Wrap(spacing: 10, runSpacing: 8, children: <Widget>[
-                _numberSettingsField(controllers['gapBeforeFirstReportMm']!, 'Перед 1-м РАПОРТ', 200),
-                _numberSettingsField(controllers['gapBeforePetitionMm']!, 'Перед клопотанням', 200),
-                _numberSettingsField(controllers['gapBeforeThirdReportMm']!, 'Перед 3-м рапортом', 200),
-                _numberSettingsField(controllers['gapBeforeApprovalMm']!, 'Перед ПОГОДЖЕНО', 200),
-                _numberSettingsField(controllers['gapBeforeOrderMm']!, 'Перед наказом', 200),
-              ]),
-            ]),
-          ),
-        ),
-        actions: <Widget>[
-          TextButton(onPressed: loadDefaults, child: const Text('Стандартні')),
-          OutlinedButton.icon(
-            onPressed: applyAndTest,
-            icon: const Icon(Icons.preview_outlined),
-            label: const Text('Застосувати + тест DOCX'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Закрити'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Зберегти'),
-          ),
-        ],
-      ),
-    );
-
-    if (saved == true) {
-      await service.saveLayoutSettings(readLayout());
-      if (mounted) showAppNotice(context, 'Оформлення DOCX збережено.');
-    }
-    for (final controller in controllers.values) {
-      controller.dispose();
-    }
-  }
-
-  Widget _numberSettingsField(
-    TextEditingController controller,
-    String label,
-    double width,
-  ) => SizedBox(
-        width: width,
-        child: TextField(
-          controller: controller,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: false),
-          decoration: InputDecoration(labelText: label),
-        ),
-      );
 
   Widget _settingsSection(String title) => Padding(
         padding: const EdgeInsets.only(top: 14, bottom: 7),
@@ -3975,11 +4277,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             onPressed: _editWordMasterTemplate,
             icon: const Icon(Icons.description_outlined),
             label: const Text('Тестова сторінка'),
-          ),
-          OutlinedButton.icon(
-            onPressed: _editDocumentLayout,
-            icon: const Icon(Icons.design_services_outlined),
-            label: const Text('Оформлення DOCX'),
           ),
         ],
       ],
@@ -4703,19 +5000,115 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   String search = '';
+  String group = 'Всі';
+  String action = 'Всі';
+  DateTime? from;
+  DateTime? to;
 
   @override
   Widget build(BuildContext context) {
-    final list = widget.controller.history.where((AuditEntry e) => '${e.actor} ${e.personName} ${e.group} ${e.newValue} ${e.action}'.toLowerCase().contains(search.toLowerCase())).toList();
+    final actions = widget.controller.history.map((e) => e.action).toSet().toList()..sort();
+    final list = widget.controller.history.where((AuditEntry e) {
+      final q = search.trim().toLowerCase();
+      final searchOk = q.isEmpty ||
+          '${e.actor} ${e.personName} ${e.group} ${e.newValue} ${e.oldValue} ${e.action} ${e.details}'
+              .toLowerCase()
+              .contains(q);
+      final groupOk = group == 'Всі' || e.group == group || e.group.split(', ').contains(group);
+      final actionOk = action == 'Всі' || e.action == action;
+      final time = DateTime(e.time.year, e.time.month, e.time.day);
+      final fromOk = from == null || !time.isBefore(DateTime(from!.year, from!.month, from!.day));
+      final toOk = to == null || !time.isAfter(DateTime(to!.year, to!.month, to!.day));
+      return searchOk && groupOk && actionOk && fromOk && toOk;
+    }).toList();
+
     return PageFrame(
-      title: 'Історія змін',
-      subtitle: 'Доступно тільки адміністраторам',
-      child: Column(children: <Widget>[
-        TextField(onChanged: (String value) => setState(() => search = value), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Користувач, ПІБ, група, статус...')),
+      title: 'Журнал дій',
+      subtitle: 'Хто, коли і що змінив · локальний журнал цього пристрою',
+      actions: <Widget>[
+        OutlinedButton.icon(
+          onPressed: () async {
+            final now = DateTime.now();
+            final picked = await showDateRangePicker(
+              context: context,
+              firstDate: DateTime(2025),
+              lastDate: DateTime(2035),
+              initialDateRange: from != null && to != null
+                  ? DateTimeRange(start: from!, end: to!)
+                  : null,
+              currentDate: now,
+            );
+            if (picked != null) {
+              setState(() {
+                from = picked.start;
+                to = picked.end;
+              });
+            }
+          },
+          icon: const Icon(Icons.date_range_outlined),
+          label: Text(from == null || to == null ? 'Період' : '${shortDate(from!)}–${shortDate(to!)}'),
+        ),
+        if (from != null || to != null)
+          IconButton(
+            tooltip: 'Скинути період',
+            onPressed: () => setState(() {
+              from = null;
+              to = null;
+            }),
+            icon: const Icon(Icons.close),
+          ),
+      ],
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: <Widget>[
+            SizedBox(
+              width: 360,
+              child: TextField(
+                onChanged: (String value) => setState(() => search = value),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Користувач, ПІБ, дія, статус...',
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 160,
+              child: DropdownButtonFormField<String>(
+                initialValue: group,
+                decoration: const InputDecoration(labelText: 'Група'),
+                items: <String>['Всі', ...AppController.groups]
+                    .map((g) => DropdownMenuItem(value: g, child: Text(g)))
+                    .toList(),
+                onChanged: (value) => setState(() => group = value ?? 'Всі'),
+              ),
+            ),
+            SizedBox(
+              width: 260,
+              child: DropdownButtonFormField<String>(
+                initialValue: action,
+                decoration: const InputDecoration(labelText: 'Тип дії'),
+                items: <String>['Всі', ...actions]
+                    .map((value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(value == 'Всі' ? 'Всі дії' : auditActionTitle(value)),
+                        ))
+                    .toList(),
+                onChanged: (value) => setState(() => action = value ?? 'Всі'),
+              ),
+            ),
+            Chip(label: Text('Записів: ${list.length}')),
+          ],
+        ),
         const SizedBox(height: 14),
         Card(
           child: list.isEmpty
-              ? const Padding(padding: EdgeInsets.all(30), child: Center(child: Text('Історія поки порожня.')))
+              ? const Padding(
+                  padding: EdgeInsets.all(30),
+                  child: Center(child: Text('За вибраними фільтрами записів немає.')),
+                )
               : ListView.separated(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -4723,15 +5116,320 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (BuildContext context, int index) {
                     final e = list[index];
+                    final title = e.personName.isNotEmpty
+                        ? '${auditActionTitle(e.action)} · ${e.personName}'
+                        : auditActionTitle(e.action);
+                    final parts = <String>[
+                      e.actor,
+                      if (e.group.isNotEmpty) e.group,
+                      if (e.day.isNotEmpty) e.day,
+                      if (e.meal.isNotEmpty) e.meal,
+                    ];
+                    final changes = e.oldValue.isNotEmpty || e.newValue.isNotEmpty
+                        ? '${e.oldValue.isEmpty ? '—' : e.oldValue} → ${e.newValue.isEmpty ? '—' : e.newValue}'
+                        : '';
                     return ListTile(
                       leading: const CircleAvatar(child: Icon(Icons.history)),
-                      title: Text('${e.personName} · ${e.group}'),
-                      subtitle: Text('${e.actor} · ${e.day} ${e.meal}\n${e.oldValue.isEmpty ? '—' : e.oldValue} → ${e.newValue.isEmpty ? '—' : e.newValue}'),
-                      isThreeLine: true,
-                      trailing: Text('${e.time.hour.toString().padLeft(2, '0')}:${e.time.minute.toString().padLeft(2, '0')}'),
+                      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                      subtitle: Text(
+                        <String>[
+                          parts.join(' · '),
+                          if (changes.isNotEmpty) changes,
+                          if (e.details.isNotEmpty) e.details,
+                        ].where((value) => value.isNotEmpty).join('\n'),
+                      ),
+                      isThreeLine: changes.isNotEmpty || e.details.isNotEmpty,
+                      trailing: Text(
+                        '${e.time.day.toString().padLeft(2, '0')}.${e.time.month.toString().padLeft(2, '0')}\n'
+                        '${e.time.hour.toString().padLeft(2, '0')}:${e.time.minute.toString().padLeft(2, '0')}',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontSize: 10),
+                      ),
                     );
                   },
                 ),
+        ),
+      ]),
+    );
+  }
+}
+
+class BackupScreen extends StatefulWidget {
+  const BackupScreen({super.key, required this.controller});
+  final AppController controller;
+
+  @override
+  State<BackupScreen> createState() => _BackupScreenState();
+}
+
+class _BackupScreenState extends State<BackupScreen> {
+  List<BackupFileInfo> backups = <BackupFileInfo>[];
+  bool loading = true;
+  bool busy = false;
+  String error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final value = await widget.controller.listBackups();
+      if (!mounted) return;
+      setState(() {
+        backups = value;
+        loading = false;
+        error = '';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _create() async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      final backup = await widget.controller.createManualBackup();
+      await _load();
+      if (mounted) showAppNotice(context, 'Backup створено: ${backup.fileName}');
+    } catch (e) {
+      if (mounted) showAppNotice(context, 'Не вдалося створити backup: $e');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _restore(BackupFileInfo backup) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Відновити резервну копію?'),
+        content: Text(
+          widget.controller.realBackend
+              ? 'Буде відновлено локальний кеш, журнал і Word-шаблон. Черга статусів із backup НЕ буде відправлена назад у Google Sheets; при наступній синхронізації серверні дані знову стануть основними. Перед відновленням автоматично створиться safety backup.'
+              : 'Поточний локальний стан буде замінено даними з ${backup.fileName}. Перед відновленням автоматично створиться safety backup.',
+        ),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Відновити')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => busy = true);
+    try {
+      await widget.controller.restoreBackup(backup);
+      await _load();
+      if (mounted) showAppNotice(context, 'Backup відновлено. Перевір дані та Word-шаблон.');
+    } catch (e) {
+      if (mounted) showAppNotice(context, 'Не вдалося відновити backup: $e');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _delete(BackupFileInfo backup) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Видалити backup?'),
+        content: Text(backup.fileName),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Видалити')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await widget.controller.deleteBackup(backup);
+    await _load();
+  }
+
+  String _size(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  String _reason(String value) {
+    switch (value) {
+      case 'automatic':
+        return 'автоматичний';
+      case 'before-restore':
+        return 'перед відновленням';
+      case 'before-import':
+        return 'перед імпортом';
+      default:
+        return 'ручний';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PageFrame(
+      title: 'Резервні копії',
+      subtitle: 'Автоматично раз на 3 дні при запуску · ручне видалення',
+      actions: <Widget>[
+        OutlinedButton.icon(
+          onPressed: busy ? null : () async {
+            final path = await widget.controller.openBackupFolder();
+            if (mounted) showAppNotice(context, path);
+          },
+          icon: const Icon(Icons.folder_open_outlined),
+          label: const Text('Відкрити папку'),
+        ),
+        FilledButton.icon(
+          onPressed: busy ? null : _create,
+          icon: const Icon(Icons.backup_outlined),
+          label: const Text('Створити backup'),
+        ),
+      ],
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(children: <Widget>[
+              const Icon(Icons.shield_outlined),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  widget.controller.realBackend
+                      ? 'Backup зберігає локальний кеш, журнал, чергу змін і твою «Мою тестову сторінку Word». Google Sheets залишається основним серверним джерелом.'
+                      : 'Backup зберігає особовий склад, статуси, журнал, чергу змін і твою «Мою тестову сторінку Word».',
+                ),
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (loading)
+          const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()))
+        else if (error.isNotEmpty)
+          Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error))
+        else if (backups.isEmpty)
+          const Card(child: Padding(padding: EdgeInsets.all(30), child: Center(child: Text('Резервних копій ще немає.'))))
+        else
+          Card(
+            child: Column(
+              children: <Widget>[
+                for (final backup in backups)
+                  ListTile(
+                    leading: Icon(backup.reason == 'automatic' ? Icons.schedule_outlined : Icons.inventory_2_outlined),
+                    title: Text(backup.fileName, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text(
+                      '${longDate(backup.createdAt)} ${backup.createdAt.hour.toString().padLeft(2, '0')}:${backup.createdAt.minute.toString().padLeft(2, '0')} · ${_size(backup.sizeBytes)} · ${backup.reason}',
+                    ),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                      IconButton(
+                        tooltip: 'Відновити',
+                        onPressed: busy ? null : () => _restore(backup),
+                        icon: const Icon(Icons.restore_outlined),
+                      ),
+                      IconButton(
+                        tooltip: 'Видалити',
+                        onPressed: busy ? null : () => _delete(backup),
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ]),
+                  ),
+              ],
+            ),
+          ),
+      ]),
+    );
+  }
+}
+
+class DataTransferScreen extends StatefulWidget {
+  const DataTransferScreen({super.key, required this.controller});
+  final AppController controller;
+
+  @override
+  State<DataTransferScreen> createState() => _DataTransferScreenState();
+}
+
+class _DataTransferScreenState extends State<DataTransferScreen> {
+  bool busy = false;
+
+  Future<void> _run(Future<void> Function() action) async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      await action();
+    } catch (e) {
+      if (mounted) showAppNotice(context, e.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PageFrame(
+      title: 'Імпорт / експорт',
+      subtitle: 'CSV для Excel · без тихого створення дублікатів',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
+        Card(
+          child: Column(children: <Widget>[
+            ListTile(
+              leading: const Icon(Icons.file_download_outlined),
+              title: const Text('Експорт особового складу в CSV'),
+              subtitle: const Text('Колонки: id · rank · name · group'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: busy ? null : () => _run(() async {
+                final path = await widget.controller.exportPersonnelCsv();
+                if (mounted) showAppNotice(context, 'Експортовано: $path');
+              }),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.edit_document),
+              title: const Text('Створити / відкрити CSV для імпорту'),
+              subtitle: const Text('Програма створить C4_personnel_import.csv з поточним списком. Відредагуй його в Excel і збережи.'),
+              trailing: const Icon(Icons.open_in_new),
+              onTap: busy ? null : () => _run(() async {
+                final path = await widget.controller.preparePersonnelImportCsv();
+                if (mounted) showAppNotice(context, 'Відкрито файл імпорту: $path');
+              }),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              enabled: !widget.controller.realBackend,
+              leading: const Icon(Icons.file_upload_outlined),
+              title: const Text('Імпортувати C4_personnel_import.csv'),
+              subtitle: Text(
+                widget.controller.realBackend
+                    ? 'При підключеному Google Sheets особовий склад змінюється у таблиці — локальний CSV-імпорт вимкнений.'
+                    : 'Імпорт об’єднує список за ID/ПІБ+групою. Перед імпортом автоматично створюється backup.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: busy || widget.controller.realBackend
+                  ? null
+                  : () => _run(() async {
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (dialogContext) => AlertDialog(
+                          title: const Text('Імпортувати CSV?'),
+                          content: const Text('Перед імпортом буде створено резервну копію. Існуючі статуси зберігаються для осіб, що вже є у списку.'),
+                          actions: <Widget>[
+                            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Скасувати')),
+                            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Імпортувати')),
+                          ],
+                        ),
+                      );
+                      if (confirmed != true) return;
+                      final changed = await widget.controller.importPersonnelCsv();
+                      if (mounted) showAppNotice(context, 'Імпорт завершено. Додано/оновлено: $changed.');
+                    }),
+            ),
+          ]),
         ),
       ]),
     );
@@ -4791,11 +5489,15 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = controller.currentUser!;
+    final lastSync = controller.lastSyncedAt == null
+        ? ''
+        : ' · ${longDate(controller.lastSyncedAt!)} '
+            '${controller.lastSyncedAt!.hour.toString().padLeft(2, '0')}:${controller.lastSyncedAt!.minute.toString().padLeft(2, '0')}';
     final syncSubtitle = controller.realBackend
         ? (controller.online
-            ? 'Google Sheets · ${controller.pendingChanges == 0 ? 'синхронізовано' : 'черга ${controller.pendingChanges}'}'
-            : 'Офлайн · черга ${controller.pendingChanges}')
-        : (controller.online ? 'Онлайн (демо)' : 'Офлайн · черга ${controller.pendingChanges}');
+            ? 'Google Sheets · ${controller.pendingChanges == 0 ? 'синхронізовано' : 'черга ${controller.pendingChanges}'}$lastSync'
+            : 'Офлайн · черга ${controller.pendingChanges}$lastSync')
+        : (controller.online ? 'Онлайн (демо)$lastSync' : 'Офлайн · черга ${controller.pendingChanges}$lastSync');
     return PageFrame(
       title: 'Налаштування',
       subtitle: '${user.displayName} · ${roleTitle(user.role)}',
@@ -4807,8 +5509,8 @@ class SettingsScreen extends StatelessWidget {
             leading: Icon(controller.realBackend ? Icons.cloud_done_outlined : Icons.science_outlined),
             title: Text(controller.realBackend ? 'Backend / Google Sheets' : 'Демо-режим'),
             subtitle: Text(controller.realBackend ? controller.apiUrl : 'Реальний сервер ще не підключений'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _configureBackend(context),
+            trailing: controller.isAdmin ? const Icon(Icons.chevron_right) : const Icon(Icons.lock_outline),
+            onTap: controller.isAdmin ? () => _configureBackend(context) : null,
           ),
           const Divider(height: 1),
           ListTile(
@@ -4816,7 +5518,7 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Синхронізація'),
             subtitle: Text(syncSubtitle),
             trailing: controller.syncing ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh_rounded),
-            onTap: controller.syncing ? null : controller.syncNow,
+            onTap: controller.syncing ? null : () => controller.syncNow(recordAudit: true),
           ),
           const Divider(height: 1),
           ListTile(leading: const Icon(Icons.send_outlined), title: const Text('Telegram / Надсилання'), subtitle: const Text('DOCX через системне меню «Поділитися»'), onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => TelegramScreen(controller: controller)))),
@@ -4855,10 +5557,46 @@ class SettingsScreen extends StatelessWidget {
         ])),
         if (controller.isAdmin) ...<Widget>[
           const SizedBox(height: 14),
-          const Card(child: Column(children: <Widget>[
-            ListTile(leading: Icon(Icons.manage_accounts_outlined), title: Text('Користувачі та ролі'), subtitle: Text('Керування користувачами та серверні обмеження працюють')), 
-            Divider(height: 1),
-            ListTile(leading: Icon(Icons.article_outlined), title: Text('Шапки та підписанти'), subtitle: Text('Поточні налаштування Apps Script не змінювались')),
+          Card(child: Column(children: <Widget>[
+            ListTile(
+              leading: const Icon(Icons.manage_accounts_outlined),
+              title: const Text('Користувачі та ролі'),
+              subtitle: const Text('Адміністратор · Редактор · Черговий'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => UsersScreen(controller: controller)),
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.history_outlined),
+              title: const Text('Журнал дій'),
+              subtitle: const Text('Статуси, масові зміни, документи, користувачі, backup'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => HistoryScreen(controller: controller)),
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.backup_outlined),
+              title: const Text('Резервні копії'),
+              subtitle: const Text('Автоматично раз на 3 дні + ручний backup / restore'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => BackupScreen(controller: controller)),
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.import_export_outlined),
+              title: const Text('Імпорт / експорт'),
+              subtitle: const Text('CSV для Excel та безпечне об’єднання списку'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => DataTransferScreen(controller: controller)),
+              ),
+            ),
           ])),
         ],
         if (controller.lastError.isNotEmpty) ...<Widget>[
