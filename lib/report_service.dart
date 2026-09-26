@@ -71,6 +71,7 @@ class ReportSettings {
     required this.ccName,
     required this.r3Line1,
     required this.r3Line2,
+    required this.r3Line3,
     required this.r3Petition,
     required this.r3Position1,
     required this.r3Position2,
@@ -95,6 +96,7 @@ class ReportSettings {
   final String ccName;
   final String r3Line1;
   final String r3Line2;
+  final String r3Line3;
   final String r3Petition;
   final String r3Position1;
   final String r3Position2;
@@ -119,6 +121,7 @@ class ReportSettings {
     ccName: 'Назар КОРНІЙЧУК',
     r3Line1: 'Начальнику ІСЗЗІ КПІ',
     r3Line2: 'ім. Ігоря Сікорського',
+    r3Line3: '',
     r3Petition: 'Клопочу по суті рапорту підполковника КОРНІЙЧУКА Н.П.',
     r3Position1: 'Перший заступник начальника',
     r3Position2: 'ІСЗЗІ КПІ ім. Ігоря Сікорського',
@@ -144,6 +147,7 @@ class ReportSettings {
         'ccName': ccName,
         'r3Line1': r3Line1,
         'r3Line2': r3Line2,
+        'r3Line3': r3Line3,
         'r3Petition': r3Petition,
         'r3Position1': r3Position1,
         'r3Position2': r3Position2,
@@ -173,6 +177,7 @@ class ReportSettings {
       ccName: s('ccName', d.ccName),
       r3Line1: s('r3Line1', d.r3Line1),
       r3Line2: s('r3Line2', d.r3Line2),
+      r3Line3: s('r3Line3', d.r3Line3),
       r3Petition: s('r3Petition', d.r3Petition),
       r3Position1: s('r3Position1', d.r3Position1),
       r3Position2: s('r3Position2', d.r3Position2),
@@ -454,12 +459,19 @@ class ReportService {
     ).firstMatch(templateXml);
     if (bodyMatch == null) throw StateError('Не вдалося прочитати структуру Word-шаблону.');
 
-    final bodyTemplate = bodyMatch.group(1)!;
+    // The bundled MASTER used to contain a floating WordArt/TextBox plus
+    // several trailing empty paragraphs. Copying that raw body for every
+    // person produced duplicate drawing IDs, corrupt DOCX warnings in Word,
+    // and an extra blank page. Sanitize the page body before duplication.
+    final bodyTemplate = _sanitizeTemplateBody(bodyMatch.group(1)!);
     final section = bodyMatch.group(2)!;
     final pages = <String>[];
     for (final person in persons) {
       pages.add(_fillPersonPage(bodyTemplate, person));
     }
+
+    // Exactly one explicit page break between people. Never append a break
+    // after the last person; this prevents an extra blank page.
     const pageBreak = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
     final combinedBody = pages.join(pageBreak);
     final newXml = templateXml.replaceRange(
@@ -467,6 +479,7 @@ class ReportService {
       bodyMatch.end,
       '<w:body>$combinedBody$section</w:body>',
     );
+    _validateGeneratedXml(newXml, persons.length);
 
     final out = Archive();
     for (final file in templateArchive.files) {
@@ -514,6 +527,7 @@ class ReportService {
       '{{CC_NAME}}': settings.ccName,
       '{{R3_1}}': settings.r3Line1,
       '{{R3_2}}': settings.r3Line2,
+      '{{R3_3}}': settings.r3Line3,
       '{{R3_PETITION}}': settings.r3Petition,
       '{{R3_POS1}}': settings.r3Position1,
       '{{R3_POS2}}': settings.r3Position2,
@@ -526,15 +540,100 @@ class ReportService {
       '{{DOC_NAME}}': settings.doctorName,
     };
 
+    var xml = _sanitizeTemplateBody(source);
+
+    // If an optional placeholder is empty, remove its entire paragraph.
+    // Replacing only the text with an empty string left visible blank ¶ rows
+    // in Word (R2_3, R2_4, R3_POS3, DOC_POS2, etc.).
+    for (final entry in values.entries) {
+      if (entry.value.trim().isEmpty) {
+        xml = _removeParagraphContaining(xml, entry.key);
+      }
+    }
+
+    for (final entry in values.entries) {
+      xml = xml.replaceAll(entry.key, _xmlEscape(entry.value));
+    }
+
+    // Remove any paragraph that became truly empty after replacement. This
+    // also strips the old four empty paragraphs at the end of the MASTER.
+    xml = _removeEmptyParagraphs(xml);
+    return xml.trim();
+  }
+
+  static String _sanitizeTemplateBody(String source) {
     var xml = source
+        // The decorative text box/WordArt caused duplicate wp:docPr,
+        // wp14:anchorId and VML shape IDs when a page was duplicated.
+        .replaceAll(
+          RegExp(r'<mc:AlternateContent[\s\S]*?</mc:AlternateContent>'),
+          '',
+        )
         .replaceAll(RegExp(r'\s+w14:paraId="[^"]*"'), '')
         .replaceAll(RegExp(r'\s+w14:textId="[^"]*"'), '')
         .replaceAll(RegExp(r'<w:bookmarkStart[^>]*/>'), '')
         .replaceAll(RegExp(r'<w:bookmarkEnd[^>]*/>'), '');
-    for (final entry in values.entries) {
-      xml = xml.replaceAll(entry.key, _xmlEscape(entry.value));
-    }
+    xml = _removeEmptyParagraphs(xml);
     return xml;
+  }
+
+  static String _removeParagraphContaining(String source, String token) {
+    final paragraph = RegExp(r'<w:p\b[^>]*>[\s\S]*?</w:p>');
+    return source.replaceAllMapped(paragraph, (match) {
+      final value = match.group(0)!;
+      return value.contains(token) ? '' : value;
+    });
+  }
+
+  static String _removeEmptyParagraphs(String source) {
+    final paragraph = RegExp(r'<w:p\b[^>]*>[\s\S]*?</w:p>');
+    final textNode = RegExp(r'<w:t\b[^>]*>([\s\S]*?)</w:t>');
+
+    return source.replaceAllMapped(paragraph, (match) {
+      final value = match.group(0)!;
+      if (value.contains('<w:br') ||
+          value.contains('<w:tab') ||
+          value.contains('<w:drawing') ||
+          value.contains('<w:pict') ||
+          value.contains('<w:object')) {
+        return value;
+      }
+
+      final text = textNode
+          .allMatches(value)
+          .map((item) => item.group(1) ?? '')
+          .join()
+          .trim();
+      return text.isEmpty ? '' : value;
+    });
+  }
+
+  static void _validateGeneratedXml(String xml, int personCount) {
+    final unresolved = RegExp(r'\{\{[^{}]+\}\}').firstMatch(xml);
+    if (unresolved != null) {
+      throw StateError(
+        'У DOCX залишився незаповнений маркер ${unresolved.group(0)}.',
+      );
+    }
+
+    if (xml.contains('<mc:AlternateContent') ||
+        xml.contains('<wp:docPr') ||
+        xml.contains('<v:shape')) {
+      throw StateError(
+        'У DOCX залишився службовий графічний об’єкт MASTER-шаблону.',
+      );
+    }
+
+    final pageBreaks = RegExp(
+      r'<w:br\b[^>]*w:type="page"[^>]*/?>',
+    ).allMatches(xml).length;
+    final expectedBreaks = personCount > 0 ? personCount - 1 : 0;
+    if (pageBreaks != expectedBreaks) {
+      throw StateError(
+        'Некоректна кількість розривів сторінки: '
+        '$pageBreaks замість $expectedBreaks.',
+      );
+    }
   }
 
   Future<void> openReport(GeneratedReport report) async {

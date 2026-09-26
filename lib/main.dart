@@ -335,7 +335,7 @@ class AppController extends ChangeNotifier {
   String managedUsersError = '';
 
   final UpdateService _updateService = UpdateService();
-  String appVersion = '0.8.0';
+  String appVersion = '0.8.1';
   bool checkingUpdate = false;
   AppUpdateInfo? availableUpdate;
   bool updatePromptShown = false;
@@ -379,7 +379,7 @@ class AppController extends ChangeNotifier {
     try {
       appVersion = await _updateService.currentVersion();
     } catch (_) {
-      appVersion = '0.8.0';
+      appVersion = '0.8.1';
     }
 
     final lastCheckRaw = _prefs?.getString('last_update_check') ?? '';
@@ -3466,12 +3466,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       'r1Line2': TextEditingController(text: current.r1Line2),
       'r2Line1': TextEditingController(text: current.r2Line1),
       'r2Line2': TextEditingController(text: current.r2Line2),
+      'r2Line3': TextEditingController(text: current.r2Line3),
       'ccPosition': TextEditingController(text: current.ccPosition),
       'ccInstitution': TextEditingController(text: current.ccInstitution),
       'ccRank': TextEditingController(text: current.ccRank),
       'ccName': TextEditingController(text: current.ccName),
       'r3Line1': TextEditingController(text: current.r3Line1),
       'r3Line2': TextEditingController(text: current.r3Line2),
+      'r3Line3': TextEditingController(text: current.r3Line3),
       'r3Petition': TextEditingController(text: current.r3Petition),
       'r3Position1': TextEditingController(text: current.r3Position1),
       'r3Position2': TextEditingController(text: current.r3Position2),
@@ -3498,6 +3500,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               _settingsSection('Клопотання начальника курсу'),
               _settingsField(controllers['r2Line1']!, 'Адресат · рядок 1'),
               _settingsField(controllers['r2Line2']!, 'Адресат · рядок 2'),
+              _settingsField(controllers['r2Line3']!, 'Адресат · рядок 3'),
               _settingsField(controllers['ccPosition']!, 'Посада'),
               _settingsField(controllers['ccInstitution']!, 'Установа'),
               _settingsField(controllers['ccRank']!, 'Звання'),
@@ -3505,6 +3508,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               _settingsSection('Третій рапорт'),
               _settingsField(controllers['r3Line1']!, 'Адресат · рядок 1'),
               _settingsField(controllers['r3Line2']!, 'Адресат · рядок 2'),
+              _settingsField(controllers['r3Line3']!, 'Адресат · рядок 3'),
               _settingsField(controllers['r3Petition']!, 'Текст клопотання'),
               _settingsField(controllers['r3Position1']!, 'Посада · рядок 1'),
               _settingsField(controllers['r3Position2']!, 'Посада · рядок 2'),
@@ -3526,12 +3530,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               controllers['r1Line2']!.text = d.r1Line2;
               controllers['r2Line1']!.text = d.r2Line1;
               controllers['r2Line2']!.text = d.r2Line2;
+              controllers['r2Line3']!.text = d.r2Line3;
               controllers['ccPosition']!.text = d.ccPosition;
               controllers['ccInstitution']!.text = d.ccInstitution;
               controllers['ccRank']!.text = d.ccRank;
               controllers['ccName']!.text = d.ccName;
               controllers['r3Line1']!.text = d.r3Line1;
               controllers['r3Line2']!.text = d.r3Line2;
+              controllers['r3Line3']!.text = d.r3Line3;
               controllers['r3Petition']!.text = d.r3Petition;
               controllers['r3Position1']!.text = d.r3Position1;
               controllers['r3Position2']!.text = d.r3Position2;
@@ -3555,7 +3561,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         r1Line2: controllers['r1Line2']!.text.trim(),
         r2Line1: controllers['r2Line1']!.text.trim(),
         r2Line2: controllers['r2Line2']!.text.trim(),
-        r2Line3: current.r2Line3,
+        r2Line3: controllers['r2Line3']!.text.trim(),
         r2Line4: current.r2Line4,
         ccPosition: controllers['ccPosition']!.text.trim(),
         ccInstitution: controllers['ccInstitution']!.text.trim(),
@@ -3563,6 +3569,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ccName: controllers['ccName']!.text.trim(),
         r3Line1: controllers['r3Line1']!.text.trim(),
         r3Line2: controllers['r3Line2']!.text.trim(),
+        r3Line3: controllers['r3Line3']!.text.trim(),
         r3Petition: controllers['r3Petition']!.text.trim(),
         r3Position1: controllers['r3Position1']!.text.trim(),
         r3Position2: controllers['r3Position2']!.text.trim(),
